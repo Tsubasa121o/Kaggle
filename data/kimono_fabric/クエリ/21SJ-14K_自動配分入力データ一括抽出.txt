@@ -1,0 +1,246 @@
+﻿/* =========================================================
+21SJ-14K 自動配分ツール入力データ 一括抽出SQL（EDAレポート2準拠版）
+
+このSQLは EDAレポート2 の考え方に合わせて、配分入力を生成します。
+
+主な準拠ポイント:
+- 需要: sales_12m（直近12か月売上）を sales_qty として出力
+- 配分対象: open_qty_pos > 0（発注残が正のJANのみ）
+- 配分上限: max_allocate = open_qty_pos（整数化）
+- 在庫不足圧: inventory_pressure = max(0, sales_3m - current_stock)
+
+注意:
+- EDAレポート2の stockout_days_total（在庫切れ累計日数）は、在庫受払帳ベースで作成されます。
+- 本SQLはDBテーブルのみで完結するため、stockout_days は「現在庫<=0時の経過日数Proxy」を返します。
+  （最終入荷日優先、無ければ max_open_days）
+========================================================= */
+
+;WITH params AS (
+    SELECT
+        20130101   AS from_yyyymmdd,
+        '21SJ-14K' AS target_model
+),
+target_jan AS (
+    SELECT DISTINCT RTRIM(s.sms_scd) AS jan_code
+    FROM SMS s
+    CROSS JOIN params p
+    WHERE (RTRIM(s.sms_kikaku) = p.target_model OR RTRIM(s.sms_mei) LIKE '%' + p.target_model + '%')
+      AND RTRIM(s.sms_scd) LIKE '452%'
+
+    UNION
+
+    SELECT DISTINCT RTRIM(d.hacd_scd) AS jan_code
+    FROM HACD d
+    CROSS JOIN params p
+    WHERE (RTRIM(d.hacd_kikaku) = p.target_model OR RTRIM(d.hacd_mei) LIKE '%' + p.target_model + '%')
+      AND RTRIM(d.hacd_scd) LIKE '452%'
+
+    UNION
+
+    SELECT DISTINCT RTRIM(d.sykd_scd) AS jan_code
+    FROM SYKD d
+    CROSS JOIN params p
+    WHERE (RTRIM(d.sykd_kikaku) = p.target_model OR RTRIM(d.sykd_mei) LIKE '%' + p.target_model + '%')
+      AND RTRIM(d.sykd_scd) LIKE '452%'
+
+    UNION
+
+    SELECT DISTINCT RTRIM(d.nykd_scd) AS jan_code
+    FROM NYKD d
+    CROSS JOIN params p
+    WHERE (RTRIM(d.nykd_kikaku) = p.target_model OR RTRIM(d.nykd_mei) LIKE '%' + p.target_model + '%')
+      AND RTRIM(d.nykd_scd) LIKE '452%'
+),
+item_master AS (
+    SELECT
+        RTRIM(s.sms_scd) AS jan_code,
+        MAX(RTRIM(s.sms_mei)) AS item_name
+    FROM SMS s
+    GROUP BY RTRIM(s.sms_scd)
+),
+sales_base AS (
+    SELECT
+        RTRIM(d.sykd_scd) AS jan_code,
+        TRY_CONVERT(date, CONVERT(varchar(8), d.sykd_uribi), 112) AS sales_date,
+        CASE
+            WHEN CAST(d.sykd_suryo AS decimal(18,2)) > 0 THEN CAST(d.sykd_suryo AS decimal(18,2))
+            ELSE CAST(0 AS decimal(18,2))
+        END AS sales_qty_pos,
+        CASE
+            WHEN CAST(d.sykd_suryo AS decimal(18,2)) < 0 THEN ABS(CAST(d.sykd_suryo AS decimal(18,2)))
+            ELSE CAST(0 AS decimal(18,2))
+        END AS return_qty,
+        RTRIM(d.sykd_mei) AS sales_item_name
+    FROM SYKD d
+    JOIN target_jan t
+      ON RTRIM(d.sykd_scd) = t.jan_code
+    CROSS JOIN params p
+    WHERE d.sykd_uribi >= p.from_yyyymmdd
+),
+analysis_anchor AS (
+    SELECT MAX(sales_date) AS analysis_end
+    FROM sales_base
+),
+demand AS (
+    SELECT
+        s.jan_code,
+        SUM(s.sales_qty_pos) AS sales_total,
+        SUM(CASE WHEN s.sales_date >= DATEADD(MONTH, -12, a.analysis_end) THEN s.sales_qty_pos ELSE 0 END) AS sales_12m,
+        SUM(CASE WHEN s.sales_date >= DATEADD(MONTH, -3,  a.analysis_end) THEN s.sales_qty_pos ELSE 0 END) AS sales_3m,
+        SUM(s.return_qty) AS return_qty,
+        MAX(s.sales_item_name) AS sales_item_name
+    FROM sales_base s
+    CROSS JOIN analysis_anchor a
+    GROUP BY s.jan_code
+),
+orders AS (
+    SELECT
+        h.hach_jno AS po_no,
+        h.hach_jucbi AS po_date_int,
+        RTRIM(d.hacd_scd) AS jan_code,
+        MAX(RTRIM(d.hacd_mei)) AS item_name,
+        SUM(CAST(d.hacd_suryo AS decimal(18,2))) AS po_qty
+    FROM HACD d
+    JOIN HACH h
+      ON d.hacd_hid = h.hach_id
+    JOIN target_jan t
+      ON RTRIM(d.hacd_scd) = t.jan_code
+    CROSS JOIN params p
+    WHERE h.hach_jucbi >= p.from_yyyymmdd
+    GROUP BY
+        h.hach_jno,
+        h.hach_jucbi,
+        RTRIM(d.hacd_scd)
+),
+receipts AS (
+    SELECT
+        h.nykh_mjno AS po_no,
+        RTRIM(d.nykd_scd) AS jan_code,
+        SUM(CAST(d.nykd_suryo AS decimal(18,2))) AS receipt_qty
+    FROM NYKD d
+    JOIN NYKH h
+      ON d.nykd_hid = h.nykh_id
+    JOIN target_jan t
+      ON RTRIM(d.nykd_scd) = t.jan_code
+    CROSS JOIN params p
+    WHERE h.nykh_uribi >= p.from_yyyymmdd
+      AND h.nykh_mjno IS NOT NULL
+      AND h.nykh_mjno <> 0
+    GROUP BY
+        h.nykh_mjno,
+        RTRIM(d.nykd_scd)
+),
+open_detail AS (
+    SELECT
+        o.po_no,
+        o.jan_code,
+        o.item_name,
+        o.po_date_int,
+        o.po_qty,
+        COALESCE(r.receipt_qty, 0) AS receipt_qty,
+        o.po_qty - COALESCE(r.receipt_qty, 0) AS open_qty,
+        CASE
+            WHEN o.po_qty - COALESCE(r.receipt_qty, 0) > 0 THEN
+                DATEDIFF(
+                    DAY,
+                    TRY_CONVERT(date, CONVERT(varchar(8), o.po_date_int), 112),
+                    CAST(GETDATE() AS date)
+                )
+            ELSE 0
+        END AS open_days
+    FROM orders o
+    LEFT JOIN receipts r
+      ON o.po_no = r.po_no
+     AND o.jan_code = r.jan_code
+),
+open_jan AS (
+    SELECT
+        jan_code,
+        MAX(item_name) AS open_item_name,
+        SUM(CASE WHEN open_qty > 0 THEN open_qty ELSE 0 END) AS open_qty_pos,
+        MAX(CASE WHEN open_qty > 0 THEN open_days ELSE 0 END) AS max_open_days
+    FROM open_detail
+    GROUP BY jan_code
+),
+stock_current AS (
+    SELECT
+        RTRIM(z.zmsn_scd) AS jan_code,
+        SUM(CAST(z.zmsn_zai AS decimal(18,2))) AS current_stock
+    FROM ZMSN z
+    JOIN target_jan t
+      ON RTRIM(z.zmsn_scd) = t.jan_code
+    GROUP BY RTRIM(z.zmsn_scd)
+),
+last_receipt AS (
+    SELECT
+        RTRIM(d.nykd_scd) AS jan_code,
+        MAX(h.nykh_uribi) AS last_receipt_date_int
+    FROM NYKD d
+    JOIN NYKH h
+      ON d.nykd_hid = h.nykh_id
+    JOIN target_jan t
+      ON RTRIM(d.nykd_scd) = t.jan_code
+    CROSS JOIN params p
+    WHERE h.nykh_uribi >= p.from_yyyymmdd
+    GROUP BY RTRIM(d.nykd_scd)
+),
+final_base AS (
+    SELECT
+        t.jan_code,
+        COALESCE(m.item_name, d.sales_item_name, o.open_item_name, t.jan_code) AS item_name,
+        COALESCE(d.sales_total, 0) AS sales_total,
+        COALESCE(d.sales_12m, 0) AS sales_12m,
+        COALESCE(d.sales_3m, 0) AS sales_3m,
+        COALESCE(d.return_qty, 0) AS return_qty,
+        COALESCE(s.current_stock, 0) AS current_stock,
+        COALESCE(o.open_qty_pos, 0) AS open_qty_pos,
+        COALESCE(o.max_open_days, 0) AS max_open_days,
+        CASE
+            WHEN COALESCE(d.sales_3m, 0) - COALESCE(s.current_stock, 0) > 0
+                THEN COALESCE(d.sales_3m, 0) - COALESCE(s.current_stock, 0)
+            ELSE 0
+        END AS inventory_pressure,
+        CASE
+            WHEN COALESCE(s.current_stock, 0) > 0 THEN 0
+            WHEN lr.last_receipt_date_int IS NOT NULL THEN
+                DATEDIFF(
+                    DAY,
+                    TRY_CONVERT(date, CONVERT(varchar(8), lr.last_receipt_date_int), 112),
+                    CAST(GETDATE() AS date)
+                )
+            ELSE COALESCE(o.max_open_days, 0)
+        END AS stockout_days_proxy
+    FROM target_jan t
+    LEFT JOIN item_master m
+      ON t.jan_code = m.jan_code
+    LEFT JOIN demand d
+      ON t.jan_code = d.jan_code
+    LEFT JOIN open_jan o
+      ON t.jan_code = o.jan_code
+    LEFT JOIN stock_current s
+      ON t.jan_code = s.jan_code
+    LEFT JOIN last_receipt lr
+      ON t.jan_code = lr.jan_code
+)
+SELECT
+    jan_code AS jan_code,
+    item_name AS item_name,
+    sales_12m AS sales_qty,
+    stockout_days_proxy AS stockout_days,
+    current_stock AS current_stock,
+    return_qty AS return_qty,
+    CAST(0 AS int) AS min_allocate,
+    CASE
+        WHEN open_qty_pos <= 0 THEN 0
+        ELSE CAST(FLOOR(open_qty_pos) AS int)
+    END AS max_allocate,
+
+    -- 参照用（不要なら削除）
+    sales_3m AS sales_3m_ref,
+    sales_total AS sales_total_ref,
+    open_qty_pos AS open_qty_ref,
+    max_open_days AS max_open_days_ref,
+    inventory_pressure AS inventory_pressure_ref
+FROM final_base
+WHERE open_qty_pos > 0
+ORDER BY jan_code;

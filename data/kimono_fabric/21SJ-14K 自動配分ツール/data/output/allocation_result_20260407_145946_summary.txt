@@ -1,0 +1,13 @@
+input_csv: C:\Users\t.ouchi\OneDrive\デスクトップ\Github\Kaggle\data\kimono_fabric\21SJ-14K 自動配分ツール\data\input\21SJ14K_allocation_input_sample.csv
+weights_json: C:\Users\t.ouchi\OneDrive\デスクトップ\Github\Kaggle\data\kimono_fabric\21SJ-14K 自動配分ツール\config\weights.json
+total_units: 200
+rows: 8
+allocated_sum: 200
+min_allocate_sum: 20
+max_allocate_sum: 395
+feature_weights:
+  - sales_qty: 0.55
+  - stockout_days: 0.25
+  - current_stock: -0.2
+  - return_rate: -0.1
+score_floor: 0.01

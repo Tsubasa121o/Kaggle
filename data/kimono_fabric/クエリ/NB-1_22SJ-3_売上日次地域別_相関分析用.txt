@@ -1,0 +1,90 @@
+/* =========================================================
+NB-1 / 22SJ-3 売上（日次×地域×JAN）相関分析用
+
+目的:
+- 品番 NB-1 と 22SJ-3 のみを抽出
+- 気象データと結合しやすい粒度（日次×地域）で集計
+
+粒度:
+- 売上日 × 8地域 × 品番 × JANコード
+========================================================= */
+
+;WITH params AS (
+    SELECT
+        20130101 AS from_yyyymmdd,
+        20991231 AS to_yyyymmdd
+),
+target_model AS (
+    SELECT 'NB-1'   AS model_no
+    UNION ALL
+    SELECT '22SJ-3' AS model_no
+),
+sales_base AS (
+    SELECT
+        d.sykd_uribi AS sales_date_int,
+        RTRIM(d.sykd_scd) AS jan_code,
+        COALESCE(NULLIF(RTRIM(s.sms_mei), ''), RTRIM(d.sykd_mei))       AS item_name,
+        COALESCE(NULLIF(RTRIM(s.sms_kikaku), ''), RTRIM(d.sykd_kikaku)) AS model_no,
+        RTRIM(e_ken.ems_str) AS prefecture_name,
+        CAST(d.sykd_suryo   AS decimal(18,2)) AS sales_qty,
+        CAST(d.sykd_kingaku AS decimal(18,2)) AS sales_amount
+    FROM SYKD d
+    JOIN SYKH h
+      ON d.sykd_hid = h.sykh_id
+    LEFT JOIN SMS s
+      ON RTRIM(d.sykd_scd) = RTRIM(s.sms_scd)
+    LEFT JOIN TMS t
+      ON RTRIM(d.sykd_tcd) = RTRIM(t.tms_tcd)
+    LEFT JOIN EMS e_ken
+      ON RTRIM(t.tms_tkbn1) = RTRIM(e_ken.ems_kbn)
+     AND e_ken.ems_id = 11
+    CROSS JOIN params p
+    JOIN target_model tm
+      ON COALESCE(NULLIF(RTRIM(s.sms_kikaku), ''), RTRIM(d.sykd_kikaku)) = tm.model_no
+    WHERE d.sykd_uribi BETWEEN p.from_yyyymmdd AND p.to_yyyymmdd
+      AND CAST(d.sykd_suryo AS decimal(18,2)) > 0
+),
+sales_region AS (
+    SELECT
+        sales_date_int,
+        jan_code,
+        model_no,
+        item_name,
+        COALESCE(NULLIF(prefecture_name, ''), '不明') AS prefecture_name,
+        CASE
+            WHEN COALESCE(NULLIF(prefecture_name, ''), '不明') IN ('北海道') THEN '北海道'
+            WHEN COALESCE(NULLIF(prefecture_name, ''), '不明') IN ('青森', '岩手', '宮城', '秋田', '山形', '福島') THEN '東北'
+            WHEN COALESCE(NULLIF(prefecture_name, ''), '不明') IN ('茨城', '栃木', '群馬', '埼玉', '千葉', '東京', '神奈川') THEN '関東'
+            WHEN COALESCE(NULLIF(prefecture_name, ''), '不明') IN ('新潟', '富山', '石川', '福井', '山梨', '長野', '岐阜', '静岡', '愛知', '三重') THEN '中部'
+            WHEN COALESCE(NULLIF(prefecture_name, ''), '不明') IN ('滋賀', '京都', '大阪', '兵庫', '奈良', '和歌山') THEN '近畿'
+            WHEN COALESCE(NULLIF(prefecture_name, ''), '不明') IN ('鳥取', '島根', '岡山', '広島', '山口') THEN '中国'
+            WHEN COALESCE(NULLIF(prefecture_name, ''), '不明') IN ('徳島', '香川', '愛媛', '高知') THEN '四国'
+            WHEN COALESCE(NULLIF(prefecture_name, ''), '不明') IN ('福岡', '佐賀', '長崎', '熊本', '大分', '宮崎', '鹿児島', '沖縄') THEN '九州沖縄'
+            ELSE '不明'
+        END AS region_8,
+        sales_qty,
+        sales_amount
+    FROM sales_base
+)
+SELECT
+    CAST(sr.sales_date_int AS varchar(8)) AS 売上日,
+    sr.region_8 AS 地域,
+    sr.prefecture_name AS 県別地域名,
+    sr.model_no AS 品番,
+    sr.jan_code AS JANコード,
+    MAX(sr.item_name) AS 商品名,
+    SUM(sr.sales_qty) AS 売上数量合計,
+    SUM(sr.sales_amount) AS 売上金額合計
+FROM sales_region sr
+GROUP BY
+    sr.sales_date_int,
+    sr.region_8,
+    sr.prefecture_name,
+    sr.model_no,
+    sr.jan_code
+ORDER BY
+    sr.sales_date_int,
+    sr.region_8,
+    sr.prefecture_name,
+    sr.model_no,
+    sr.jan_code;
