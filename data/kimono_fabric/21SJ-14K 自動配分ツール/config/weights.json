@@ -1,9 +1,0 @@
-{
-  "feature_weights": {
-    "sales_qty": 0.5,
-    "stockout_days": 0.25,
-    "current_stock": -0.15,
-    "return_rate": -0.1
-  },
-  "score_floor": 0.01
-}

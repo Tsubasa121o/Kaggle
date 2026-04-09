@@ -1,0 +1,51 @@
+﻿WITH candidates AS (
+    -- 商品マスタ
+    SELECT
+        'SMS'                 AS source_table,
+        RTRIM(s.sms_scd)      AS JANコード,
+        RTRIM(s.sms_mei)      AS 商品名,
+        RTRIM(s.sms_kikaku)   AS 品番,
+        RTRIM(s.sms_size)     AS サイズ,
+        RTRIM(s.sms_color)    AS カラー
+    FROM SMS s
+    WHERE RTRIM(s.sms_kikaku) = '21SJ-14K'
+       OR RTRIM(s.sms_mei) LIKE '%21SJ-14K%'
+
+    UNION ALL
+
+    -- 売上明細（マスタに無いJANの拾い上げ用）
+    SELECT
+        'SYKD'                AS source_table,
+        RTRIM(d.sykd_scd)     AS JANコード,
+        RTRIM(d.sykd_mei)     AS 商品名,
+        RTRIM(d.sykd_kikaku)  AS 品番,
+        RTRIM(d.sykd_size)    AS サイズ,
+        RTRIM(d.sykd_color)   AS カラー
+    FROM SYKD d
+    WHERE RTRIM(d.sykd_kikaku) = '21SJ-14K'
+       OR RTRIM(d.sykd_mei) LIKE '%21SJ-14K%'
+
+    UNION ALL
+
+    -- 発注明細（マスタに無いJANの拾い上げ用）
+    SELECT
+        'HACD'                AS source_table,
+        RTRIM(d.hacd_scd)     AS JANコード,
+        RTRIM(d.hacd_mei)     AS 商品名,
+        RTRIM(d.hacd_kikaku)  AS 品番,
+        RTRIM(d.hacd_size)    AS サイズ,
+        RTRIM(d.hacd_color)   AS カラー
+    FROM HACD d
+    WHERE RTRIM(d.hacd_kikaku) = '21SJ-14K'
+       OR RTRIM(d.hacd_mei) LIKE '%21SJ-14K%'
+)
+SELECT DISTINCT
+    JANコード,
+    商品名,
+    品番,
+    サイズ,
+    カラー
+FROM candidates
+WHERE JANコード IS NOT NULL
+  AND JANコード <> ''
+ORDER BY JANコード;

@@ -1,0 +1,160 @@
+﻿/* =========================================================
+21SJ-14K : JAN別 発注残数（発注No連携）
+- CTEのスコープ問題を避けるため #detail に一度格納してから2結果を返す
+========================================================= */
+
+IF OBJECT_ID('tempdb..#detail') IS NOT NULL
+    DROP TABLE #detail;
+
+;WITH params AS (
+    SELECT 20210101 AS from_yyyymmdd
+),
+target_jan AS (
+    SELECT DISTINCT RTRIM(s.sms_scd) AS jan_code
+    FROM SMS s
+    WHERE (RTRIM(s.sms_kikaku) = '21SJ-14K' OR RTRIM(s.sms_mei) LIKE '%21SJ-14K%')
+      AND RTRIM(s.sms_scd) LIKE '452%'
+
+    UNION
+
+    SELECT DISTINCT RTRIM(d.hacd_scd) AS jan_code
+    FROM HACD d
+    WHERE (RTRIM(d.hacd_kikaku) = '21SJ-14K' OR RTRIM(d.hacd_mei) LIKE '%21SJ-14K%')
+      AND RTRIM(d.hacd_scd) LIKE '452%'
+
+    UNION
+
+    SELECT DISTINCT RTRIM(d.nykd_scd) AS jan_code
+    FROM NYKD d
+    WHERE (RTRIM(d.nykd_kikaku) = '21SJ-14K' OR RTRIM(d.nykd_mei) LIKE '%21SJ-14K%')
+      AND RTRIM(d.nykd_scd) LIKE '452%'
+),
+orders AS (
+    SELECT
+        h.hach_jno                                 AS po_no,
+        h.hach_jucbi                               AS po_date_int,
+        RTRIM(h.hach_tcd)                          AS vendor_code,
+        RTRIM(d.hacd_scd)                          AS jan_code,
+        RTRIM(d.hacd_mei)                          AS item_name,
+        RTRIM(d.hacd_kikaku)                       AS model_no,
+        RTRIM(d.hacd_color)                        AS color,
+        RTRIM(d.hacd_size)                         AS size,
+        SUM(CAST(d.hacd_suryo AS decimal(18,2)))   AS po_qty
+    FROM HACD d
+    JOIN HACH h ON d.hacd_hid = h.hach_id
+    JOIN target_jan t ON RTRIM(d.hacd_scd) = t.jan_code
+    CROSS JOIN params p
+    WHERE h.hach_jucbi >= p.from_yyyymmdd
+    GROUP BY
+        h.hach_jno,
+        h.hach_jucbi,
+        RTRIM(h.hach_tcd),
+        RTRIM(d.hacd_scd),
+        RTRIM(d.hacd_mei),
+        RTRIM(d.hacd_kikaku),
+        RTRIM(d.hacd_color),
+        RTRIM(d.hacd_size)
+),
+receipts AS (
+    SELECT
+        h.nykh_mjno                                AS po_no,
+        RTRIM(d.nykd_scd)                          AS jan_code,
+        MIN(h.nykh_uribi)                          AS first_receipt_date_int,
+        MAX(h.nykh_uribi)                          AS last_receipt_date_int,
+        SUM(CAST(d.nykd_suryo AS decimal(18,2)))   AS receipt_qty
+    FROM NYKD d
+    JOIN NYKH h ON d.nykd_hid = h.nykh_id
+    JOIN target_jan t ON RTRIM(d.nykd_scd) = t.jan_code
+    CROSS JOIN params p
+    WHERE h.nykh_uribi >= p.from_yyyymmdd
+      AND h.nykh_mjno IS NOT NULL
+      AND h.nykh_mjno <> 0
+    GROUP BY
+        h.nykh_mjno,
+        RTRIM(d.nykd_scd)
+),
+detail AS (
+    SELECT
+        o.po_no,
+        o.po_date_int,
+        TRY_CONVERT(date, CONVERT(varchar(8), o.po_date_int), 112) AS po_date,
+        o.vendor_code,
+        o.jan_code,
+        o.item_name,
+        o.model_no,
+        o.color,
+        o.size,
+        o.po_qty,
+        COALESCE(r.receipt_qty, 0)                                AS receipt_qty,
+        o.po_qty - COALESCE(r.receipt_qty, 0)                     AS open_qty,
+        r.first_receipt_date_int,
+        r.last_receipt_date_int,
+        CASE
+            WHEN COALESCE(r.receipt_qty, 0) = 0 THEN N'未入荷'
+            WHEN o.po_qty - COALESCE(r.receipt_qty, 0) > 0 THEN N'一部入荷'
+            WHEN o.po_qty - COALESCE(r.receipt_qty, 0) = 0 THEN N'完納'
+            ELSE N'過入荷(要確認)'
+        END AS progress_status,
+        CASE
+            WHEN o.po_qty - COALESCE(r.receipt_qty, 0) > 0
+                THEN DATEDIFF(
+                        DAY,
+                        TRY_CONVERT(date, CONVERT(varchar(8), o.po_date_int), 112),
+                        CAST(GETDATE() AS date)
+                     )
+            ELSE NULL
+        END AS open_days
+    FROM orders o
+    LEFT JOIN receipts r
+        ON o.po_no = r.po_no
+       AND o.jan_code = r.jan_code
+)
+SELECT *
+INTO #detail
+FROM detail;
+
+/* 1) 発注明細単位 */
+SELECT
+    po_no                               AS [発注No],
+    po_date_int                         AS [発注日_yyyymmdd],
+    po_date                             AS [発注日],
+    vendor_code                         AS [発注先コード],
+    jan_code                            AS [JANコード],
+    item_name                           AS [商品名],
+    model_no                            AS [品番],
+    color                               AS [カラー],
+    size                                AS [サイズ],
+    po_qty                              AS [発注数量],
+    receipt_qty                         AS [累計入荷数量],
+    open_qty                            AS [発注残数量],
+    first_receipt_date_int              AS [初回入荷日_yyyymmdd],
+    last_receipt_date_int               AS [最終入荷日_yyyymmdd],
+    progress_status                     AS [進捗区分],
+    open_days                           AS [残あり経過日数]
+FROM #detail
+ORDER BY
+    CASE WHEN open_qty > 0 THEN 0 ELSE 1 END,
+    open_qty DESC,
+    po_date_int;
+
+/* 2) JAN別集計 */
+SELECT
+    jan_code                            AS [JANコード],
+    MAX(item_name)                      AS [商品名],
+    MAX(model_no)                       AS [品番],
+    MAX(color)                          AS [カラー],
+    MAX(size)                           AS [サイズ],
+    SUM(po_qty)                         AS [累計発注数量],
+    SUM(receipt_qty)                    AS [累計入荷数量],
+    SUM(open_qty)                       AS [累計発注残数量],
+    SUM(CASE WHEN progress_status = N'未入荷' THEN open_qty ELSE 0 END) AS [未入荷残数量],
+    SUM(CASE WHEN open_qty > 0 THEN 1 ELSE 0 END)                         AS [残あり発注件数],
+    MAX(open_days)                      AS [最大残あり経過日数]
+FROM #detail
+GROUP BY jan_code
+ORDER BY
+    [累計発注残数量] DESC,
+    [未入荷残数量] DESC,
+    [最大残あり経過日数] DESC;
+
+DROP TABLE #detail;

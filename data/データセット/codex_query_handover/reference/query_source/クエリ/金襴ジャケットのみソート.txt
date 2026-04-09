@@ -1,0 +1,68 @@
+SELECT
+LEFT(RTRIM(CAST(d.sykd_uribi AS VARCHAR)), 4)  AS 年度,
+LEFT(RTRIM(CAST(d.sykd_uribi AS VARCHAR)), 6)  AS 月度,
+RTRIM(CAST(d.sykd_uribi AS VARCHAR))           AS 売上日,
+RTRIM(d.sykd_tcd)                              AS 得意先コード,
+RTRIM(c.cms_mei1)                              AS 得意先名１,
+RTRIM(d.sykd_scd)                              AS 商品コード,
+RTRIM(d.sykd_mei)                              AS 商品名,
+RTRIM(d.sykd_kikaku)                           AS 規格型番,
+RTRIM(d.sykd_color)                            AS 色,
+RTRIM(d.sykd_size)                             AS サイズ,
+RTRIM(e_ken.ems_str)                           AS 県別地域名,
+RTRIM(d.sykd_suryo)                            AS 売上数量,
+RTRIM(e_gys.ems_str)                           AS 業種名  
+
+FROM SYKD d
+JOIN  SYKH h    ON d.sykd_hid    = h.sykh_id
+LEFT JOIN TMS  t    ON RTRIM(d.sykd_tcd)  = RTRIM(t.tms_tcd)
+LEFT JOIN CMS  c    ON t.tms_cmsid        = c.cms_id
+LEFT JOIN SMS  s    ON RTRIM(d.sykd_scd)  = RTRIM(s.sms_scd)
+LEFT JOIN EMS e1    ON RTRIM(s.sms_skbn1) = RTRIM(e1.ems_kbn) AND e1.ems_id = 22
+LEFT JOIN EMS e2    ON RTRIM(s.sms_skbn2) = RTRIM(e2.ems_kbn) AND e2.ems_id = 22
+LEFT JOIN EMS e3    ON RTRIM(s.sms_skbn3) = RTRIM(e3.ems_kbn) AND e3.ems_id = 23
+LEFT JOIN EMS e_tan ON RTRIM(h.sykh_jtan) = RTRIM(e_tan.ems_kbn) AND e_tan.ems_id = 67
+LEFT JOIN EMS e_ken ON RTRIM(t.tms_tkbn1) = RTRIM(e_ken.ems_kbn) AND e_ken.ems_id = 11
+LEFT JOIN EMS e_gys ON RTRIM(t.tms_tkbn2) = RTRIM(e_gys.ems_kbn) AND e_gys.ems_id = 13
+LEFT JOIN EMS e_tkb ON RTRIM(t.tms_tkbn4) = RTRIM(e_tkb.ems_kbn) AND e_tkb.ems_id = 14
+WHERE d.sykd_uribi >= 20240101
+  AND RTRIM(d.sykd_scd) IN (
+    '4524486103247',
+    '4524486111495',
+    '4524486114328',
+    '4524486094965',
+    '4524486093708',
+    '4524486093647',
+    '4524486109492',
+    '4524486093678',
+    '4524486097966',
+    '4524486097973',
+    '4524486097959',
+    '4524486103230',
+    '4524486111488',
+    '4524486114311',
+    '4524486094958',
+    '4524486093692',
+    '4524486093630',
+    '4524486109485',
+    '4524486093661',
+    '4524486113505',
+    '4524486113499',
+    '4524486103254',
+    '4524486111501',
+    '4524486114335',
+    '4524486094972',
+    '4524486093715',
+    '4524486093654',
+    '4524486109508',
+    '4524486093685',
+    '4524486109515',
+    '4524486109522',
+    '4524486117237',
+    '4524486117220',
+    '4524486117244',
+    '4524486106545',
+    '4524486106538',
+    '4524486106552'
+  )
+ORDER BY d.sykd_uribi, d.sykd_tcd, d.sykd_scd

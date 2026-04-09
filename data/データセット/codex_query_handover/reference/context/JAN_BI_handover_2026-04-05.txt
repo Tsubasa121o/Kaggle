@@ -1,0 +1,338 @@
+JAN BI HANDOVER LOG
+Date: 2026-04-05
+Authoring context: Codex session (desktop)
+Primary user request:
+1) Read and understand current JAN-focused analysis in:
+   E:\GitHub\Kaggle\data\kimono_fabric
+2) Read and understand app integration target in:
+   E:\GitHub\Degner-Internal-App\apps
+3) Build a BI tool that can analyze all JANs (not only specific JAN list),
+   and integrate it as another app under Degner-Internal-App/apps.
+4) Include correlation, simple regression, multiple regression.
+5) Report whether current data is sufficient for those analyses and what extra data is needed.
+
+====================================================================
+0. EXECUTIVE SUMMARY
+====================================================================
+- A new app "JAN BI Dashboard" was implemented and integrated into the existing dispatcher.
+- It supports two data sources:
+  - sample CSV mode (current 21SJ-14K analysis outputs)
+  - DB mode (SQL Server via pyodbc, all JAN scope)
+- Implemented APIs for:
+  - status
+  - data load (sample/db)
+  - option lists
+  - overview metrics + time series
+  - correlation matrix
+  - simple/multiple regression
+  - data sufficiency report
+- Integrated route:
+  - /jan-bi/
+- Home card added in root app top page.
+
+====================================================================
+1. DIRECTORIES EXAMINED
+====================================================================
+[A] Source analysis assets:
+E:\GitHub\Kaggle\data\kimono_fabric
+
+Main checked items:
+- query txt files under:
+  E:\GitHub\Kaggle\data\kimono_fabric\クエリ
+- existing JAN-limited analysis bundle:
+  E:\GitHub\Kaggle\data\kimono_fabric\21SJ-14K 分析
+  - stock_ledger_analysis_452.py
+  - 21SJ-14K_JAN_sales_stockout_receipt.ipynb
+  - multiple CSV outputs (sales/orders/receipts/events/stockouts/returns/ledger)
+- table definition workbooks:
+  - 【使うテーブルのみ】PCA_商魂商管_テーブル定義書.xlsx
+  - 【全部一通り解析】PCA_商魂商管_テーブル定義書 .xlsx
+- feature workbook:
+  - 金襴特徴量.xlsx
+
+[B] Target integration app:
+E:\GitHub\Degner-Internal-App
+
+Main checked items:
+- root dispatcher:
+  E:\GitHub\Degner-Internal-App\app.py
+- app architecture examples under apps/*:
+  - Current Order List
+  - CSV Converter
+  - Care Label generator
+  - Product Quality Inspection Sheet
+  - Defect Analysis / Order Consideration / Sticker Creation Tool
+- dependency file:
+  E:\GitHub\Degner-Internal-App\requirements.txt
+
+====================================================================
+2. FINDINGS FROM EXISTING JAN ANALYSIS
+====================================================================
+2.1 Existing SQL/table usage pattern (from query txt + definition workbook)
+- Sales: SYKD + SYKH
+- Orders: HACD + HACH
+- Receipts: NYKD + NYKH
+- Product/customer lookups: SMS / TMS / CMS / EMS
+- Known join style confirmed in existing files:
+  - SYKD.sykd_hid = SYKH.sykh_id
+  - HACD.hacd_hid = HACH.hach_id
+  - NYKD.nykd_hid = NYKH.nykh_id
+
+2.2 Existing Python analysis behavior (stock_ledger_analysis_452.py)
+- Reads ledger xlsx and JAN list csv.
+- Filters target JAN set (mostly 452* range in current scenario).
+- Exports:
+  - clean ledger subset
+  - returns
+  - receipts
+  - stockout periods
+  - parquet cache
+
+2.3 Sample data coverage observed from current CSV bundle
+Computed summary during implementation tests:
+- jan_in_master: 60
+- jan_in_sales: 53
+- jan_in_daily: 56
+- jan_in_stockout: 32
+- daily_rows: 3227
+- sales_rows: 2782
+- period_from: 2020-12-21
+- period_to: 2026-04-03
+
+Data sufficiency summary currently computed:
+- total_jan: 56
+- corr_ready_jan: 31
+- simple_ready_jan: 26
+- multiple_ready_jan: 9
+
+Interpretation:
+- Correlation and simple regression are possible for a meaningful subset.
+- Multiple regression is currently possible only for a smaller subset.
+
+====================================================================
+3. IMPLEMENTATION CHANGES
+====================================================================
+3.1 New app added
+Directory:
+E:\GitHub\Degner-Internal-App\apps\JAN BI Dashboard
+
+Files created:
+- app.py
+- index.html
+- static\app.js
+- static\style.css
+- README.md
+
+3.2 Root app integration
+File updated:
+- E:\GitHub\Degner-Internal-App\app.py
+
+Changes:
+- Added loading of new sub-app:
+  jan_bi_app_path = BASE_DIR / "apps" / "JAN BI Dashboard" / "app.py"
+  jan_bi_app = load_flask_app(jan_bi_app_path)
+- Added route mount in DispatcherMiddleware:
+  "/jan-bi": jan_bi_app
+- Added home page card linking to /jan-bi/
+
+3.3 Dependencies updated
+File updated:
+- E:\GitHub\Degner-Internal-App\requirements.txt
+
+Added entries:
+- pandas==3.0.2
+- pyodbc==5.3.0
+- numpy==2.4.4
+
+====================================================================
+4. API SPEC OF NEW JAN BI APP
+====================================================================
+Base mount path:
+- /jan-bi
+
+Endpoints:
+1) GET /jan-bi/api/status
+   Returns source + loaded_at + coverage summary.
+
+2) POST /jan-bi/api/load
+   Body:
+   - source: "sample" or "db"
+   - start_date: int (e.g. 20130101)
+   Behavior:
+   - sample: loads CSV bundle from JAN_BI_SAMPLE_DIR
+   - db: loads from SQL Server using JAN_BI_DB_CONN_STR
+
+3) GET /jan-bi/api/options
+   Returns filter option lists:
+   jan, model, color, size, prefecture, customer, industry
+
+4) GET /jan-bi/api/overview?[filters...]
+   Returns:
+   - KPI totals
+   - time-series arrays
+   - top_jan
+   - top_customer
+
+5) GET /jan-bi/api/correlation?[filters...]
+   Returns correlation matrix for metrics.
+   Default metrics:
+   sales_qty, order_qty, receipt_qty, return_qty
+
+6) GET /jan-bi/api/regression?jan=...&x_metric=...
+   Returns:
+   - simple regression (x_metric -> sales_qty)
+   - multiple regression (fixed feature set)
+
+7) GET /jan-bi/api/data-sufficiency
+   Returns per-JAN readiness flags and summary counts.
+
+====================================================================
+5. REGRESSION/SUFFICIENCY RULES IN CODE
+====================================================================
+Current implementation rules:
+- Correlation ready:
+  observations >= 20 (daily points after aggregation)
+- Simple regression ready:
+  active sales days >= 30 (rule-of-thumb)
+- Multiple regression ready:
+  active sales days >= 80 (rule-of-thumb in sufficiency report)
+  AND API-level multiple regression check:
+    n_obs >= max(60, features*12)
+    condition number <= 1e8
+
+Multiple regression features:
+- order_qty
+- receipt_qty
+- return_qty
+- sales_lag_1
+- sales_lag_7
+- is_weekend
+
+====================================================================
+6. DATA SOURCE DETAILS
+====================================================================
+6.1 sample mode
+Expected current default folder:
+E:\GitHub\Kaggle\data\kimono_fabric\21SJ-14K 分析
+
+Parser logic:
+- Detects file roles by column count and numeric/non-numeric header behavior.
+- Normalizes JAN to 13-digit strings.
+- Builds daily integrated table from:
+  sales + orders + receipts + returns
+- If sales rows contain negative quantity, negative component is treated as return_qty.
+
+6.2 db mode
+Requires environment variable:
+- JAN_BI_DB_CONN_STR
+
+Queries used:
+- Sales from SYKD/SYKH with customer/prefecture/industry enrichment
+- Orders from HACD/HACH
+- Receipts from NYKD/NYKH
+
+Default start date:
+- JAN_BI_DB_START_DATE, fallback 20130101
+
+====================================================================
+7. FRONTEND BEHAVIOR
+====================================================================
+UI implemented in index.html + static/app.js:
+- Source load buttons:
+  - Sample読込
+  - DB読込
+- Filter panel:
+  jan/model/color/size/prefecture/customer/industry/date range
+- KPI cards
+- Timeseries chart (Chart.js)
+- Correlation table
+- Regression text results
+- Data sufficiency table and missing-data guidance
+
+====================================================================
+8. VERIFICATION PERFORMED
+====================================================================
+Python compile checks:
+- app.py (new JAN BI app): OK
+- root app.py: OK
+
+App-level API checks via Flask test client:
+- /api/status -> 200
+- /api/options -> 200
+- /api/overview -> 200
+- /api/correlation -> 200
+- /api/data-sufficiency -> 200
+- /api/regression (without jan) -> 400 (expected validation)
+
+Dispatcher-level checks:
+- / -> 200
+- /jan-bi/ -> 200
+- /jan-bi/api/status -> 200
+- /jan-bi/api/overview -> 200
+
+DB load behavior without connection string:
+- POST /jan-bi/api/load {"source":"db"} -> 500 with clear message:
+  "JAN_BI_DB_CONN_STR is not configured."
+  (expected and intentional guard)
+
+====================================================================
+9. RUNTIME/ENV NOTES
+====================================================================
+During this session, additional packages were installed into:
+E:\GitHub\Degner-Internal-App\.venv
+
+Installed for execution verification:
+- numpy
+- pandas
+- pyodbc
+- pdfplumber (needed by existing CSV Converter app import chain during root app load test)
+
+Also installed in system Python context earlier:
+- openpyxl
+(used for reading xlsx definitions while analyzing kimono_fabric assets)
+
+====================================================================
+10. OPEN ITEMS / NEXT ACTIONS
+====================================================================
+Recommended next steps for next Codex:
+1) Connect actual SQL Server and validate DB mode with production-like row volumes.
+2) Add optional caching (parquet or sqlite) if DB query latency is high.
+3) Add additional explanatory variables for better multiple regression quality:
+   - price/discount
+   - campaign flags
+   - inventory snapshots
+   - lead-time actuals
+   - return reason categories
+4) Add downloadable CSV export from filtered overview and model outputs.
+5) Add automated tests for:
+   - file role detection in sample parser
+   - regression edge cases (zero variance, insufficient rows)
+
+====================================================================
+11. QUICK START FOR NEXT CODEX
+====================================================================
+Project root:
+E:\GitHub\Degner-Internal-App
+
+Main touched files:
+- E:\GitHub\Degner-Internal-App\apps\JAN BI Dashboard\app.py
+- E:\GitHub\Degner-Internal-App\apps\JAN BI Dashboard\index.html
+- E:\GitHub\Degner-Internal-App\apps\JAN BI Dashboard\static\app.js
+- E:\GitHub\Degner-Internal-App\apps\JAN BI Dashboard\static\style.css
+- E:\GitHub\Degner-Internal-App\apps\JAN BI Dashboard\README.md
+- E:\GitHub\Degner-Internal-App\app.py
+- E:\GitHub\Degner-Internal-App\requirements.txt
+
+Run (typical):
+1) activate venv
+2) install requirements
+3) set env vars as needed:
+   - JAN_BI_DB_CONN_STR
+   - JAN_BI_DB_START_DATE
+   - JAN_BI_SAMPLE_DIR
+4) start root app:
+   python app.py
+5) open:
+   http://localhost:14444/jan-bi/
+
+END OF HANDOVER

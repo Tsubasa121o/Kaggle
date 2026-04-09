@@ -1,0 +1,58 @@
+﻿/*
+要件:
+- JAN頭が452で始まる商品のみ
+- 売上開始日(最初の売上日)から本日までの販売個数
+- カラー/サイズを出力
+- 販売個数は返品(負数)を除外して集計
+*/
+WITH today_param AS (
+    SELECT CAST(CONVERT(VARCHAR(8), GETDATE(), 112) AS INT) AS today_yyyymmdd
+),
+sales_filtered AS (
+    SELECT
+        RTRIM(d.sykd_scd)                           AS jan_code,
+        d.sykd_uribi                                AS sale_date,
+        CAST(d.sykd_suryo AS DECIMAL(18,2))         AS sales_qty,
+        RTRIM(d.sykd_mei)                           AS detail_name,
+        RTRIM(d.sykd_color)                         AS detail_color,
+        RTRIM(d.sykd_size)                          AS detail_size
+    FROM SYKD d
+    CROSS JOIN today_param p
+    WHERE RTRIM(d.sykd_scd) LIKE '452%'
+      AND d.sykd_uribi <= p.today_yyyymmdd
+      AND d.sykd_suryo > 0
+),
+sales_by_jan AS (
+    SELECT
+        jan_code,
+        MIN(sale_date)                              AS sales_start_date,
+        SUM(sales_qty)                              AS total_sales_qty,
+        MAX(detail_name)                            AS detail_name,
+        MAX(detail_color)                           AS detail_color,
+        MAX(detail_size)                            AS detail_size
+    FROM sales_filtered
+    GROUP BY jan_code
+),
+sms_attr AS (
+    SELECT
+        RTRIM(s.sms_scd)                            AS jan_code,
+        MAX(RTRIM(s.sms_mei))                       AS sms_name,
+        MAX(RTRIM(s.sms_color))                     AS sms_color,
+        MAX(RTRIM(s.sms_size))                      AS sms_size
+    FROM SMS s
+    WHERE RTRIM(s.sms_scd) LIKE '452%'
+    GROUP BY RTRIM(s.sms_scd)
+)
+SELECT
+    s.jan_code                                      AS JANコード,
+    COALESCE(NULLIF(a.sms_name, ''),  s.detail_name)  AS 品名,
+    COALESCE(NULLIF(a.sms_color, ''), s.detail_color) AS カラー,
+    COALESCE(NULLIF(a.sms_size, ''),  s.detail_size)  AS サイズ,
+    RTRIM(CAST(s.sales_start_date AS VARCHAR(8)))   AS 売上開始日,
+    RTRIM(CAST(p.today_yyyymmdd AS VARCHAR(8)))     AS 集計基準日,
+    s.total_sales_qty                               AS 販売個数
+FROM sales_by_jan s
+CROSS JOIN today_param p
+LEFT JOIN sms_attr a
+    ON s.jan_code = a.jan_code
+ORDER BY s.jan_code;

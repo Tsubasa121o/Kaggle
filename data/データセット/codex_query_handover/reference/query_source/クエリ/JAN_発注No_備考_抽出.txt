@@ -1,0 +1,14 @@
+﻿SELECT
+    RTRIM(d.hacd_scd) AS JANコード,
+    h.hach_jno        AS 発注No,
+    COALESCE(
+        NULLIF(RTRIM(d.hacd_biko), ''),
+        NULLIF(RTRIM(h.hach_tekmei), '')
+    )                 AS 備考
+FROM HACD d
+JOIN HACH h
+    ON d.hacd_hid = h.hach_id
+WHERE h.hach_jucbi >= 20240101
+ORDER BY
+    h.hach_jno,
+    RTRIM(d.hacd_scd);

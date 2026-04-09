@@ -1,5 +1,28 @@
-.venv/
+﻿.venv/
+**/.venv/
 __pycache__/
+**/__pycache__/
 .ipynb_checkpoints/
+**/.ipynb_checkpoints/
 *.pyc
 .DS_Store
+
+# Ignore data assets under data/ by default.
+data/**
+
+# Keep directories so nested allow rules work.
+!data/**/
+
+# Keep source/code-like files under data/.
+!data/**/*.py
+!data/**/*.md
+!data/**/*.txt
+!data/**/*.json
+!data/**/*.js
+!data/**/*.css
+!data/**/.gitkeep
+
+# Never track local virtualenv/cache content inside data/.
+data/**/.venv/**
+data/**/__pycache__/**
+data/**/.ipynb_checkpoints/**

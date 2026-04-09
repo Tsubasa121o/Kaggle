@@ -1,0 +1,119 @@
+﻿/*
+要件:
+- 各JANごとの日別売上（売上なし日も0補完）
+- JAN頭が452で始まる商品のみ
+- 売上開始日(最初の売上日)から本日まで
+- 品名/カラー/サイズを出力
+- 日別売上数量は返品(負数)を除外して集計
+*/
+WITH today_param AS (
+    SELECT
+        CAST(CONVERT(VARCHAR(8), GETDATE(), 112) AS INT) AS today_yyyymmdd,
+        CAST(GETDATE() AS DATE) AS today_date
+),
+sales_base AS (
+    SELECT
+        RTRIM(d.sykd_scd)                           AS jan_code,
+        d.sykd_uribi                                AS sale_date_int,
+        CONVERT(DATE, CONVERT(VARCHAR(8), d.sykd_uribi), 112) AS sale_date,
+        CAST(d.sykd_suryo AS DECIMAL(18,2))         AS sales_qty,
+        RTRIM(d.sykd_mei)                           AS detail_name,
+        RTRIM(d.sykd_color)                         AS detail_color,
+        RTRIM(d.sykd_size)                          AS detail_size
+    FROM SYKD d
+    CROSS JOIN today_param p
+    WHERE RTRIM(d.sykd_scd) LIKE '452%'
+      AND d.sykd_uribi <= p.today_yyyymmdd
+      AND d.sykd_suryo > 0
+),
+jan_start AS (
+    SELECT
+        jan_code,
+        MIN(sale_date_int)                          AS sales_start_date_int,
+        MIN(sale_date)                              AS sales_start_date
+    FROM sales_base
+    GROUP BY jan_code
+),
+jan_detail AS (
+    SELECT
+        b.jan_code,
+        MAX(b.detail_name)                          AS detail_name,
+        MAX(b.detail_color)                         AS detail_color,
+        MAX(b.detail_size)                          AS detail_size
+    FROM sales_base b
+    GROUP BY b.jan_code
+),
+daily_sales AS (
+    SELECT
+        b.jan_code,
+        b.sale_date,
+        SUM(b.sales_qty)                            AS daily_sales_qty
+    FROM sales_base b
+    GROUP BY b.jan_code, b.sale_date
+),
+sms_attr AS (
+    SELECT
+        RTRIM(s.sms_scd)                            AS jan_code,
+        MAX(RTRIM(s.sms_mei))                       AS sms_name,
+        MAX(RTRIM(s.sms_color))                     AS sms_color,
+        MAX(RTRIM(s.sms_size))                      AS sms_size
+    FROM SMS s
+    WHERE RTRIM(s.sms_scd) LIKE '452%'
+    GROUP BY RTRIM(s.sms_scd)
+),
+jan_master AS (
+    SELECT
+        j.jan_code,
+        j.sales_start_date_int,
+        j.sales_start_date,
+        COALESCE(NULLIF(a.sms_name, ''),  d.detail_name)  AS item_name,
+        COALESCE(NULLIF(a.sms_color, ''), d.detail_color) AS item_color,
+        COALESCE(NULLIF(a.sms_size, ''),  d.detail_size)  AS item_size
+    FROM jan_start j
+    LEFT JOIN jan_detail d
+        ON j.jan_code = d.jan_code
+    LEFT JOIN sms_attr a
+        ON j.jan_code = a.jan_code
+),
+min_start AS (
+    SELECT MIN(sales_start_date) AS min_start_date
+    FROM jan_start
+),
+date_series AS (
+    SELECT m.min_start_date AS dt
+    FROM min_start m
+    WHERE m.min_start_date IS NOT NULL
+
+    UNION ALL
+
+    SELECT DATEADD(DAY, 1, ds.dt)
+    FROM date_series ds
+    CROSS JOIN today_param p
+    WHERE ds.dt < p.today_date
+),
+jan_calendar AS (
+    SELECT
+        jm.jan_code,
+        jm.item_name,
+        jm.item_color,
+        jm.item_size,
+        jm.sales_start_date_int,
+        ds.dt AS sale_date
+    FROM jan_master jm
+    JOIN date_series ds
+        ON ds.dt >= jm.sales_start_date
+)
+SELECT
+    c.jan_code                                      AS JANコード,
+    c.item_name                                     AS 品名,
+    c.item_color                                    AS カラー,
+    c.item_size                                     AS サイズ,
+    RTRIM(CAST(c.sales_start_date_int AS VARCHAR(8))) AS 売上開始日,
+    CONVERT(VARCHAR(8), c.sale_date, 112)          AS 売上日,
+    ISNULL(d.daily_sales_qty, 0)                   AS 日別販売個数
+FROM jan_calendar c
+LEFT JOIN daily_sales d
+    ON c.jan_code = d.jan_code
+   AND c.sale_date = d.sale_date
+ORDER BY c.jan_code, c.sale_date
+OPTION (MAXRECURSION 0);

@@ -1,0 +1,34 @@
+﻿[目的]
+このフォルダは、旧 kimono_fabric 案件のDBクエリ作成情報を、
+この配下だけで完結運用できる形に整理した引き継ぎハブです。
+
+[このフォルダで解決すること]
+- どのSQLを参照すべきか迷わない
+- どのテーブルをどう結合すべきか迷わない
+- JANリストの件数・由来・更新方法を迷わない
+- Codexへ渡す依頼文を毎回作り直さない
+
+[最初に読む順序]
+1. 00_START_HERE.txt
+2. 01_PROJECT_SCOPE_AND_PATHS.md
+3. 02_TABLE_JOIN_DICTIONARY.md
+4. 03_QUERY_INVENTORY.md
+5. 05_QUERY_AUTHORING_SOP.md
+6. 07_NEXT_CODEX_PROMPT_FULL.txt
+
+[即利用手順（新しいCodexセッション開始時）]
+1. 07_NEXT_CODEX_PROMPT_FULL.txt の全文を最初に貼る
+2. 今回の依頼内容を続けて追記する
+3. Codexの出力SQLは必ず `query_output` 配下へ保存させる
+4. 作業後、08_CHANGELOG_TEMPLATE.md を使って履歴を追記する
+
+[作業完了時の必須更新]
+- 新規/更新したSQLファイルパスを記録
+- 追加・変更した条件（期間, JAN, 粒度, 集計）を記録
+- 08_CHANGELOG_TEMPLATE.md に1エントリ追加
+
+[最重要ルール]
+- 推測で列名・テーブル名を作らない（定義書にある項目のみ）
+- 文字列コード比較は RTRIM 前提で考える
+- 日付int(yyyymmdd)は int として扱い、表示時のみ文字列化する
+- JAN IN (...) は件数・順序・値を勝手に変更しない
