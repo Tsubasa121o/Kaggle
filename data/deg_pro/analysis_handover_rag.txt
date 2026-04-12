@@ -1,0 +1,457 @@
+RAG / HANDOVER MEMO
+Project: deg_pro apparel sales correction and analysis
+Last updated: 2026-04-12
+
+========================================
+1. Purpose
+========================================
+
+This project builds a daily feature table for apparel sales analysis.
+The main business intent is:
+
+- Use JAN as the base SKU unit.
+- Keep product_code so multiple JANs can be grouped as one product when needed.
+- Correct raw daily sales so weekday bias and monthly/seasonal bias are reduced.
+- Preserve zero-sales days because "not sold" is also meaningful for analysis.
+
+Current main output:
+
+- product_daily_features.csv
+
+Current analysis notebook:
+
+- product_daily_features分析.ipynb
+
+Current feature-generation script:
+
+- 補正プログラム.py
+
+
+========================================
+2. Current Files And Roles
+========================================
+
+1. sku_daily_sales.csv
+- Raw sales data.
+- Headerless.
+- Contains SKU-level sales rows.
+
+2. jan_product_map.csv
+- Mapping from jan_code to product_code.
+
+3. 補正プログラム.py
+- Reads raw data and mapping.
+- Builds corrected daily feature table.
+- Saves product_daily_features.csv.
+
+4. product_daily_features.csv
+- Main analysis table.
+- One row = one JAN x one date.
+- Includes zero-filled dates and corrected sales columns.
+
+5. product_daily_features分析.ipynb
+- Notebook used to inspect the CSV.
+- Does not rebuild the CSV.
+- Used for validation, plotting, interpretation.
+
+
+========================================
+3. Current CSV Schema
+========================================
+
+Columns in product_daily_features.csv:
+
+1. jan_code
+- JAN code.
+- Base SKU key.
+
+2. product_code
+- Product code.
+- Used when multiple JANs should be grouped into one product.
+
+3. sales_date
+- Daily date.
+
+4. sales_qty
+- Raw daily sales quantity.
+
+5. launch_date
+- Launch/start date for the JAN.
+
+6. day_of_week
+- Monday=0 ... Sunday=6
+
+7. month
+- Month number 1-12
+
+8. days_since_launch
+- sales_date - launch_date in days
+
+9. p99
+- JAN-level 99th percentile cap used to soften large spikes
+
+10. sales_qty_clean
+- min(sales_qty, p99)
+
+11. dow_index
+- Shared weekday correction index
+
+12. sales_dow_adj
+- sales_qty_clean / dow_index
+
+13. month_index
+- Shared month correction index
+
+14. sales_adj
+- Final corrected sales
+- sales_dow_adj / month_index
+- Then capped so sold-day correction does not exceed 5x raw sales
+
+
+========================================
+4. Current Correction Logic
+========================================
+
+The latest logic in 補正プログラム.py is:
+
+1. Read raw sales and mapping.
+2. Merge sku_code with jan_code so each JAN gets a product_code.
+3. Convert dates and numeric types.
+4. Aggregate to JAN x date daily sales.
+5. Fill missing dates from launch_date to global max date with sales_qty=0.
+6. Add calendar columns:
+   - day_of_week
+   - month
+   - days_since_launch
+7. Build p99 from positive sales only.
+8. Build sales_qty_clean = min(sales_qty, p99).
+9. Build shared dow_index from all JANs.
+10. Apply floor to dow_index so weekends are not over-amplified.
+11. Re-normalize dow_index to mean 1.
+12. Build sales_dow_adj = sales_qty_clean / dow_index.
+13. Build shared month_index from JAN-level month ratios.
+14. Re-normalize month_index to mean 1.
+15. Build sales_adj = sales_dow_adj / month_index.
+16. Cap sold-day correction so sales_adj <= sales_qty * 5.
+
+
+========================================
+5. Important Design Decisions
+========================================
+
+1. Base key is JAN, not product_code
+- This is intentional.
+- Daily rows are SKU/JAN-level.
+- Product-level analysis should be done by grouping product_code later.
+
+2. Zero-sales days are preserved
+- This is intentional and important.
+- The table is not only about sold days.
+- Zero days are used to analyze demand sparsity and product lifecycle.
+
+3. Weekday and month correction are shared, not SKU-specific
+- dow_index and month_index are currently global/common rules.
+- This was chosen for stable comparison across SKUs.
+- p99 and launch-based fields are SKU-specific.
+
+4. The current correction is for comparison, not "truth"
+- sales_qty is actual observed daily sales.
+- sales_adj is a comparison-friendly adjusted indicator.
+- Do not replace operational raw sales reporting with sales_adj.
+
+
+========================================
+6. Current Parameter Values
+========================================
+
+From 補正プログラム.py:
+
+- DOW_INDEX_FLOOR = 0.4
+- MAX_CORRECTION_FACTOR = 5.0
+
+Meaning:
+
+- weekday indices cannot go below 0.4 before re-normalization
+- sold-day corrected sales cannot exceed 5x raw sales
+
+
+========================================
+7. Problems Found Earlier And Fixes Already Applied
+========================================
+
+1. Problem: p99 could become 0 for sparse JANs
+- Result: sold days could be incorrectly collapsed to 0
+- Fix: p99 is now computed from positive-sales days only
+- Extra safeguard: if a JAN has any positive sale, p99 is clipped to at least 1
+
+2. Problem: weekend correction was too strong
+- Result: Saturday/Sunday corrected sales were amplified too much
+- Fix: weekday index floor added and re-normalized
+
+3. Problem: month_index was globally below 1
+- Result: corrected sales were being pushed up too broadly
+- Fix: month_index is now normalized to mean 1
+
+4. Problem: extreme adjusted values still possible
+- Fix: sales_adj on sold days is capped at raw sales * 5
+
+
+========================================
+8. Validation Results Already Confirmed
+========================================
+
+The following checks have already been run successfully:
+
+1. product_daily_features分析.ipynb executed fully with no notebook errors
+- Code cells executed: 14 in one pass, later expanded to 18 cells in the latest state
+- No output_type=error remained in the notebook
+
+2. CSV formula integrity checks
+- sales_qty_clean = min(sales_qty, p99) : OK
+- sales_dow_adj = sales_qty_clean / dow_index : OK
+- sales_adj = sales_dow_adj / month_index : OK
+
+3. Quality checks
+- raw>0 and sales_adj==0 : 0 rows
+- month_index mean = 1.0
+- dow_index mean = 1.0
+
+4. Current correction strength after latest tuning
+- sold-day factor q95: about 2.33x
+- sold-day factor q99: about 3.24x
+- max factor: about 3.77x
+
+Interpretation:
+- Correction is no longer extremely aggressive.
+- It is still meaningful, but now more controlled.
+
+
+========================================
+9. What The Notebook Currently Does
+========================================
+
+product_daily_features分析.ipynb currently does these things:
+
+1. Reads product_daily_features.csv safely
+- utf-8-sig
+- jan_code and product_code as string
+- date parsing enabled
+
+2. Checks:
+- head()
+- column names
+- dtypes
+- null presence
+- null counts
+
+3. Builds df_jp for Japanese display only
+- df remains English-column analysis table
+- df_jp is display-only
+
+4. Plots one top-selling JAN
+- raw sales vs adjusted sales
+- daily line plot
+- 7-day moving average plot
+
+5. Defines helper plotting functions
+- plot_sku_compare_grid(...)
+- plot_by_product_code(...)
+- plot_weekday_lift(...)
+
+6. Adds exploratory scatter plots
+- sales_qty vs sales_adj
+- days_since_launch vs sales_adj
+- dow_index vs month_index
+
+Important note:
+- The third scatter plot (dow_index vs month_index) is not essential for business reading.
+- It is more about the correction rule itself than about product behavior.
+
+
+========================================
+10. How To Rebuild The CSV
+========================================
+
+Command:
+
+python 補正プログラム.py
+
+What it does:
+
+- reads raw source files
+- rebuilds product_daily_features.csv from scratch
+
+Re-run this after changing correction logic.
+
+
+========================================
+11. How To Use The Data Correctly
+========================================
+
+Use sales_qty when:
+
+- checking actual operational sales
+- reporting observed daily sales
+- looking at true raw demand realization
+
+Use sales_adj when:
+
+- comparing SKUs under more equalized conditions
+- comparing product-level strength
+- checking lifecycle patterns while reducing weekday/month effects
+
+Use product_code grouping when:
+
+- a product is represented by multiple JANs
+- comparing products instead of SKUs
+
+Use jan_code when:
+
+- analyzing individual SKU behavior
+- comparing sizes/colors/SKU-specific demand
+
+
+========================================
+12. What Is Already Understood Conceptually
+========================================
+
+The following concepts were already discussed and should be preserved:
+
+1. p99 is percentile, not statistical confidence
+- It is a distribution cutoff, not "95% confidence"
+
+2. Weekday correction and month correction are similar in spirit
+- both build an index and divide by it
+- but month correction is more careful:
+  it first builds JAN-level month ratios, then aggregates them
+
+3. Zero-sales days are important
+- they are not noise
+- they are part of the signal
+
+4. Shared correction is intentional
+- current weekday and month indices are not SKU-specific
+- that is a deliberate tradeoff for comparability and stability
+
+
+========================================
+13. Current Risks / Limits
+========================================
+
+These are known limitations of the current approach:
+
+1. Shared weekday/month correction may miss SKU-specific seasonality
+- especially if certain motorcycle products behave differently from general apparel
+
+2. Zero-heavy data
+- around 93% of daily rows are zero-sales rows
+- this is not wrong, but it affects interpretation and future modeling
+
+3. Filled date ranges favor long-lived JANs
+- older or long-selling JANs contribute more rows
+- this can bias aggregate analyses unless grouped carefully
+
+4. No stockout / availability flag exists
+- zero sales may mean "no demand" or "not available"
+- this is not distinguishable in the current table
+
+
+========================================
+14. Recommended Next Steps
+========================================
+
+Priority order:
+
+1. Validate correction visually on chosen SKUs/products
+- Use plot_sku_compare_grid(...)
+- Use plot_by_product_code(...)
+- Check whether raw and adjusted curves keep similar shape
+
+2. Validate weekday lift by business intuition
+- Use plot_weekday_lift(...)
+- Check if Saturday/Sunday lift still looks too strong or now acceptable
+
+3. Start simple ranking analysis
+- SKU level:
+  groupby jan_code, aggregate sales_qty and sales_adj
+- Product level:
+  groupby product_code, aggregate sales_qty and sales_adj
+
+4. Start lifecycle analysis
+- Group by days_since_launch
+- Inspect average sales_adj by lifecycle day
+
+5. Add new features only after baseline analysis is trusted
+- lag_7
+- lag_28
+- rolling_mean_7
+- rolling_mean_28
+- rolling_std_28
+- is_sold flag
+- days_since_last_sale
+- zero_streak
+
+
+========================================
+15. Recommended Immediate Notebook Tasks
+========================================
+
+If continuing from the current notebook, the best next analyses are:
+
+1. Compare raw and adjusted SKU rankings
+- Which SKUs move a lot after correction?
+
+2. Compare product_code rankings
+- Which products remain strong after equalization?
+
+3. Lifecycle curve
+- average sales_adj by days_since_launch
+
+4. Optional imbalance check
+- per-JAN row count
+- per-JAN zero ratio
+- share of sales contributed by top 10 JANs
+
+
+========================================
+16. Suggested Future Improvements
+========================================
+
+Possible later upgrades, not required now:
+
+1. product_code-level month_index
+- instead of one shared month rule, create month correction by product family/group
+
+2. category-level weekday/month indices
+- if motorcycle apparel behaves differently from other groups
+
+3. explicit holiday/event features
+- national holidays
+- campaign days
+- season open/close periods
+
+4. stock/availability features
+- if inventory or listing availability becomes available
+
+5. modeling-friendly balanced aggregation
+- when comparing across JANs, aggregate with JAN-equal weights rather than row-equal weights
+
+
+========================================
+17. Practical Reminders
+========================================
+
+1. Keep df (English columns) for analysis code.
+2. Keep df_jp only for display in notebook.
+3. Rebuild CSV from the script, not manually inside the notebook.
+4. If a graph looks strange, first check:
+- raw vs adjusted shape
+- weekday lift
+- correction factor distribution
+
+
+========================================
+18. One-Sentence Summary
+========================================
+
+The current pipeline produces a JAN-level daily sales table with zero-filled days and controlled weekday/month correction, and it is now in a valid state for comparative SKU/product analysis, but future refinement may be needed if SKU-specific seasonality becomes a priority.
