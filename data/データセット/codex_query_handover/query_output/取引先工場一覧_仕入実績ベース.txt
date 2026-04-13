@@ -1,0 +1,96 @@
+/*
+要件:
+- 取引先工場一覧を取得する
+
+定義（本SQLの仮定）:
+- 工場 = 仕入実績がある取引先
+- 基準テーブルは NYKH（仕入ヘッダ）
+
+出力:
+- 取引先コード
+- 取引先名（複数候補から解決）
+- 初回仕入日
+- 最終仕入日
+- 仕入伝票件数
+*/
+WITH supplier_base AS (
+    SELECT
+        RTRIM(h.nykh_tcd)                           AS supplier_code,
+        MAX(CASE WHEN h.nykh_cmsid > 0 THEN h.nykh_cmsid END) AS supplier_cmsid,
+        MAX(CASE WHEN h.nykh_fmsid > 0 THEN h.nykh_fmsid END) AS supplier_fmsid,
+        MIN(h.nykh_uribi)                           AS first_purchase_date,
+        MAX(h.nykh_uribi)                           AS last_purchase_date,
+        COUNT(*)                                    AS purchase_slip_count
+    FROM NYKH h
+    WHERE h.nykh_tcd IS NOT NULL
+      AND RTRIM(h.nykh_tcd) <> ''
+    GROUP BY RTRIM(h.nykh_tcd)
+),
+name_from_cmsid AS (
+    SELECT
+        b.supplier_code,
+        MAX(RTRIM(c.cms_mei1))                      AS cms_name1,
+        MAX(RTRIM(c.cms_mei2))                      AS cms_name2
+    FROM supplier_base b
+    LEFT JOIN CMS c
+        ON b.supplier_cmsid = c.cms_id
+    GROUP BY b.supplier_code
+),
+name_from_tms AS (
+    SELECT
+        RTRIM(t.tms_tcd)                            AS supplier_code,
+        MAX(RTRIM(c.cms_mei1))                      AS tms_name1,
+        MAX(RTRIM(c.cms_mei2))                      AS tms_name2
+    FROM TMS t
+    LEFT JOIN CMS c
+        ON t.tms_cmsid = c.cms_id
+    GROUP BY RTRIM(t.tms_tcd)
+),
+name_from_fms AS (
+    SELECT
+        b.supplier_code,
+        MAX(RTRIM(f.fms_dep))                       AS fms_location,
+        MAX(RTRIM(f.fms_mei))                       AS fms_person
+    FROM supplier_base b
+    LEFT JOIN FMS f
+        ON b.supplier_fmsid = f.fms_id
+    GROUP BY b.supplier_code
+)
+SELECT
+    b.supplier_code                                 AS 取引先コード,
+    COALESCE(
+        NULLIF(c1.cms_name1, ''),
+        NULLIF(c1.cms_name2, ''),
+        NULLIF(c2.tms_name1, ''),
+        NULLIF(c2.tms_name2, ''),
+        NULLIF(f.fms_location, ''),
+        NULLIF(f.fms_person, ''),
+        ''
+    )                                               AS 取引先名,
+    CASE
+        WHEN NULLIF(c1.cms_name1, '') IS NOT NULL THEN 'CMSID->CMS.mei1'
+        WHEN NULLIF(c1.cms_name2, '') IS NOT NULL THEN 'CMSID->CMS.mei2'
+        WHEN NULLIF(c2.tms_name1, '') IS NOT NULL THEN 'TCD->TMS->CMS.mei1'
+        WHEN NULLIF(c2.tms_name2, '') IS NOT NULL THEN 'TCD->TMS->CMS.mei2'
+        WHEN NULLIF(f.fms_location, '') IS NOT NULL THEN 'FMS.dep'
+        WHEN NULLIF(f.fms_person, '') IS NOT NULL THEN 'FMS.mei'
+        ELSE 'NOT_FOUND'
+    END                                             AS 名称ソース,
+    ISNULL(c1.cms_name1, '')                        AS 候補_CMS名1,
+    ISNULL(c1.cms_name2, '')                        AS 候補_CMS名2,
+    ISNULL(c2.tms_name1, '')                        AS 候補_TMS経由名1,
+    ISNULL(c2.tms_name2, '')                        AS 候補_TMS経由名2,
+    ISNULL(f.fms_location, '')                      AS 候補_FMS所在,
+    ISNULL(f.fms_person, '')                        AS 候補_FMS担当者,
+    RTRIM(CAST(b.first_purchase_date AS VARCHAR(8))) AS 初回仕入日,
+    RTRIM(CAST(b.last_purchase_date AS VARCHAR(8)))  AS 最終仕入日,
+    b.purchase_slip_count                           AS 仕入伝票件数
+FROM supplier_base b
+LEFT JOIN name_from_cmsid c1
+    ON b.supplier_code = c1.supplier_code
+LEFT JOIN name_from_tms c2
+    ON b.supplier_code = c2.supplier_code
+LEFT JOIN name_from_fms f
+    ON b.supplier_code = f.supplier_code
+ORDER BY
+    b.supplier_code;

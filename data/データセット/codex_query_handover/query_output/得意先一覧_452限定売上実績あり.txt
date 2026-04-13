@@ -1,0 +1,33 @@
+/*
+要件:
+- JAN頭が452で始まる商品の売上実績がある得意先一覧
+- 重複なし
+- 本日までの売上データを対象
+*/
+WITH today_param AS (
+    SELECT CAST(CONVERT(VARCHAR(8), GETDATE(), 112) AS INT) AS today_yyyymmdd
+),
+customer_base AS (
+    SELECT DISTINCT
+        RTRIM(d.sykd_tcd)                           AS customer_code
+    FROM SYKD d
+    CROSS JOIN today_param p
+    WHERE RTRIM(d.sykd_scd) LIKE '452%'
+      AND d.sykd_uribi <= p.today_yyyymmdd
+),
+customer_attr AS (
+    SELECT
+        RTRIM(t.tms_tcd)                            AS customer_code,
+        MAX(RTRIM(c.cms_mei1))                      AS customer_name
+    FROM TMS t
+    LEFT JOIN CMS c
+        ON t.tms_cmsid = c.cms_id
+    GROUP BY RTRIM(t.tms_tcd)
+)
+SELECT
+    b.customer_code                                AS 得意先コード,
+    ISNULL(a.customer_name, '')                    AS 得意先名
+FROM customer_base b
+LEFT JOIN customer_attr a
+    ON b.customer_code = a.customer_code
+ORDER BY b.customer_code;

@@ -1,0 +1,97 @@
+/*
+Purpose:
+- Ledger-style event detail for 452* JAN
+- Includes only events we can reliably read from DB: sale, return, receipt
+*/
+WITH params AS (
+    SELECT
+        20130101 AS from_yyyymmdd,
+        CAST(CONVERT(VARCHAR(8), GETDATE(), 112) AS INT) AS to_yyyymmdd
+),
+sales_events AS (
+    SELECT
+        RTRIM(d.sykd_scd) AS jan_code,
+        RTRIM(d.sykd_mei) AS item_name,
+        d.sykd_uribi AS event_date,
+        CASE
+            WHEN CAST(d.sykd_suryo AS DECIMAL(18,2)) < 0 THEN 'RETURN'
+            ELSE 'SALE'
+        END AS event_type,
+        h.sykh_denno AS slip_no,
+        RTRIM(d.sykd_tcd) AS partner_code,
+        RTRIM(c.cms_mei1) AS partner_name,
+        CAST(0 AS DECIMAL(18,2)) AS in_qty,
+        CASE
+            WHEN CAST(d.sykd_suryo AS DECIMAL(18,2)) < 0
+                THEN ABS(CAST(d.sykd_suryo AS DECIMAL(18,2)))
+            ELSE CAST(d.sykd_suryo AS DECIMAL(18,2))
+        END AS out_qty,
+        CASE
+            WHEN CAST(d.sykd_suryo AS DECIMAL(18,2)) < 0
+                THEN ABS(CAST(d.sykd_suryo AS DECIMAL(18,2)))
+            ELSE -CAST(d.sykd_suryo AS DECIMAL(18,2))
+        END AS net_qty
+    FROM SYKD d
+    JOIN SYKH h
+      ON d.sykd_hid = h.sykh_id
+    LEFT JOIN TMS t
+      ON RTRIM(d.sykd_tcd) = RTRIM(t.tms_tcd)
+    LEFT JOIN CMS c
+      ON t.tms_cmsid = c.cms_id
+    CROSS JOIN params p
+    WHERE RTRIM(d.sykd_scd) LIKE '452%'
+      AND d.sykd_uribi BETWEEN p.from_yyyymmdd AND p.to_yyyymmdd
+      AND CAST(d.sykd_suryo AS DECIMAL(18,2)) <> 0
+),
+receipt_events AS (
+    SELECT
+        RTRIM(d.nykd_scd) AS jan_code,
+        RTRIM(d.nykd_mei) AS item_name,
+        h.nykh_uribi AS event_date,
+        'RECEIPT' AS event_type,
+        h.nykh_denno AS slip_no,
+        RTRIM(h.nykh_tcd) AS partner_code,
+        RTRIM(c.cms_mei1) AS partner_name,
+        CASE
+            WHEN CAST(d.nykd_suryo AS DECIMAL(18,2)) > 0
+                THEN CAST(d.nykd_suryo AS DECIMAL(18,2))
+            ELSE CAST(0 AS DECIMAL(18,2))
+        END AS in_qty,
+        CAST(0 AS DECIMAL(18,2)) AS out_qty,
+        CASE
+            WHEN CAST(d.nykd_suryo AS DECIMAL(18,2)) > 0
+                THEN CAST(d.nykd_suryo AS DECIMAL(18,2))
+            ELSE CAST(0 AS DECIMAL(18,2))
+        END AS net_qty
+    FROM NYKD d
+    JOIN NYKH h
+      ON d.nykd_hid = h.nykh_id
+    LEFT JOIN TMS t
+      ON RTRIM(h.nykh_tcd) = RTRIM(t.tms_tcd)
+    LEFT JOIN CMS c
+      ON t.tms_cmsid = c.cms_id
+    CROSS JOIN params p
+    WHERE RTRIM(d.nykd_scd) LIKE '452%'
+      AND h.nykh_uribi BETWEEN p.from_yyyymmdd AND p.to_yyyymmdd
+      AND CAST(d.nykd_suryo AS DECIMAL(18,2)) > 0
+)
+SELECT
+    e.jan_code AS jan_code,
+    e.item_name AS item_name,
+    RTRIM(CAST(e.event_date AS VARCHAR(8))) AS event_date,
+    e.event_type AS event_type,
+    e.slip_no AS slip_no,
+    e.partner_code AS partner_code,
+    ISNULL(e.partner_name, '') AS partner_name,
+    e.in_qty AS in_qty,
+    e.out_qty AS out_qty,
+    e.net_qty AS net_qty
+FROM (
+    SELECT * FROM sales_events
+    UNION ALL
+    SELECT * FROM receipt_events
+) e
+ORDER BY
+    e.jan_code,
+    e.event_date,
+    e.slip_no;

@@ -1,0 +1,187 @@
+/*
+Purpose:
+- Keep 1st column as purchase vendor code (HACH.hach_tcd)
+- Enumerate as many name-related columns as possible
+- Help identify where the correct vendor/factory name is stored
+*/
+WITH hach_by_code AS (
+    SELECT
+        RTRIM(h.hach_tcd) AS code,
+        MAX(CASE WHEN h.hach_tid > 0 THEN h.hach_tid END) AS hach_tid,
+        MAX(CASE WHEN h.hach_cmsid > 0 THEN h.hach_cmsid END) AS hach_cmsid,
+        MAX(CASE WHEN h.hach_fmsid > 0 THEN h.hach_fmsid END) AS hach_fmsid,
+        MAX(CASE WHEN h.hach_ncdcmsid > 0 THEN h.hach_ncdcmsid END) AS hach_ncdcmsid,
+        MAX(NULLIF(RTRIM(h.hach_tekmei), '')) AS hach_tekmei,
+        MAX(NULLIF(RTRIM(h.hach_fmsmei), '')) AS hach_fmsmei,
+        COUNT(*) AS hach_row_count,
+        MIN(h.hach_jucbi) AS first_po_date,
+        MAX(h.hach_jucbi) AS last_po_date
+    FROM HACH h
+    WHERE h.hach_tcd IS NOT NULL
+      AND RTRIM(h.hach_tcd) <> ''
+    GROUP BY RTRIM(h.hach_tcd)
+),
+tms_by_tcd AS (
+    SELECT
+        RTRIM(t.tms_tcd) AS code,
+        MAX(t.tms_cmsid) AS tms_cmsid_by_tcd,
+        MAX(t.tms_fmsid) AS tms_fmsid_by_tcd,
+        MAX(NULLIF(RTRIM(t.tms_ocd), '')) AS tms_ocd_by_tcd
+    FROM TMS t
+    GROUP BY RTRIM(t.tms_tcd)
+),
+tms_by_ocd AS (
+    SELECT
+        RTRIM(t.tms_ocd) AS code,
+        MAX(t.tms_cmsid) AS tms_cmsid_by_ocd,
+        MAX(t.tms_fmsid) AS tms_fmsid_by_ocd,
+        MAX(NULLIF(RTRIM(t.tms_tcd), '')) AS tms_tcd_by_ocd
+    FROM TMS t
+    WHERE RTRIM(t.tms_ocd) <> ''
+    GROUP BY RTRIM(t.tms_ocd)
+),
+cms_by_hach_cmsid AS (
+    SELECT
+        h.code,
+        MAX(NULLIF(RTRIM(c.cms_mei1), '')) AS name_hach_cmsid_mei1,
+        MAX(NULLIF(RTRIM(c.cms_mei2), '')) AS name_hach_cmsid_mei2
+    FROM hach_by_code h
+    LEFT JOIN CMS c
+      ON h.hach_cmsid = c.cms_id
+    GROUP BY h.code
+),
+cms_by_hach_tid AS (
+    SELECT
+        h.code,
+        MAX(NULLIF(RTRIM(c.cms_mei1), '')) AS name_hach_tid_mei1,
+        MAX(NULLIF(RTRIM(c.cms_mei2), '')) AS name_hach_tid_mei2
+    FROM hach_by_code h
+    LEFT JOIN CMS c
+      ON h.hach_tid = c.cms_id
+    GROUP BY h.code
+),
+cms_by_hach_ncdcmsid AS (
+    SELECT
+        h.code,
+        MAX(NULLIF(RTRIM(c.cms_mei1), '')) AS name_hach_ncdcmsid_mei1,
+        MAX(NULLIF(RTRIM(c.cms_mei2), '')) AS name_hach_ncdcmsid_mei2
+    FROM hach_by_code h
+    LEFT JOIN CMS c
+      ON h.hach_ncdcmsid = c.cms_id
+    GROUP BY h.code
+),
+cms_by_tms_tcd AS (
+    SELECT
+        h.code,
+        MAX(NULLIF(RTRIM(c.cms_mei1), '')) AS name_tms_tcd_mei1,
+        MAX(NULLIF(RTRIM(c.cms_mei2), '')) AS name_tms_tcd_mei2
+    FROM hach_by_code h
+    LEFT JOIN tms_by_tcd t
+      ON h.code = t.code
+    LEFT JOIN CMS c
+      ON t.tms_cmsid_by_tcd = c.cms_id
+    GROUP BY h.code
+),
+cms_by_tms_ocd AS (
+    SELECT
+        h.code,
+        MAX(NULLIF(RTRIM(c.cms_mei1), '')) AS name_tms_ocd_mei1,
+        MAX(NULLIF(RTRIM(c.cms_mei2), '')) AS name_tms_ocd_mei2
+    FROM hach_by_code h
+    LEFT JOIN tms_by_ocd t
+      ON h.code = t.code
+    LEFT JOIN CMS c
+      ON t.tms_cmsid_by_ocd = c.cms_id
+    GROUP BY h.code
+),
+fms_by_hach_fmsid AS (
+    SELECT
+        h.code,
+        MAX(NULLIF(RTRIM(f.fms_dep), '')) AS fms_dep_by_hach_fmsid,
+        MAX(NULLIF(RTRIM(f.fms_mei), '')) AS fms_mei_by_hach_fmsid,
+        MAX(CASE WHEN f.fms_cmsid > 0 THEN f.fms_cmsid END) AS fms_cmsid_by_hach_fmsid
+    FROM hach_by_code h
+    LEFT JOIN FMS f
+      ON h.hach_fmsid = f.fms_id
+    GROUP BY h.code
+),
+cms_via_fms AS (
+    SELECT
+        f.code,
+        MAX(NULLIF(RTRIM(c.cms_mei1), '')) AS name_fms_cmsid_mei1,
+        MAX(NULLIF(RTRIM(c.cms_mei2), '')) AS name_fms_cmsid_mei2
+    FROM fms_by_hach_fmsid f
+    LEFT JOIN CMS c
+      ON f.fms_cmsid_by_hach_fmsid = c.cms_id
+    GROUP BY f.code
+)
+SELECT
+    h.code AS code,  -- 1st column fixed
+    COALESCE(
+        c1.name_hach_cmsid_mei1,
+        c1.name_hach_cmsid_mei2,
+        c4.name_tms_tcd_mei1,
+        c4.name_tms_tcd_mei2,
+        c5.name_tms_ocd_mei1,
+        c5.name_tms_ocd_mei2,
+        c2.name_hach_tid_mei1,
+        c2.name_hach_tid_mei2,
+        c3.name_hach_ncdcmsid_mei1,
+        c3.name_hach_ncdcmsid_mei2,
+        c6.name_fms_cmsid_mei1,
+        c6.name_fms_cmsid_mei2,
+        f1.fms_dep_by_hach_fmsid,
+        f1.fms_mei_by_hach_fmsid,
+        h.hach_fmsmei,
+        h.hach_tekmei,
+        ''
+    ) AS resolved_name,
+    h.hach_tid,
+    h.hach_cmsid,
+    h.hach_fmsid,
+    h.hach_ncdcmsid,
+    h.hach_tekmei,
+    h.hach_fmsmei,
+    t1.tms_cmsid_by_tcd,
+    t1.tms_fmsid_by_tcd,
+    t1.tms_ocd_by_tcd,
+    t2.tms_cmsid_by_ocd,
+    t2.tms_fmsid_by_ocd,
+    t2.tms_tcd_by_ocd,
+    c1.name_hach_cmsid_mei1,
+    c1.name_hach_cmsid_mei2,
+    c2.name_hach_tid_mei1,
+    c2.name_hach_tid_mei2,
+    c3.name_hach_ncdcmsid_mei1,
+    c3.name_hach_ncdcmsid_mei2,
+    c4.name_tms_tcd_mei1,
+    c4.name_tms_tcd_mei2,
+    c5.name_tms_ocd_mei1,
+    c5.name_tms_ocd_mei2,
+    f1.fms_dep_by_hach_fmsid,
+    f1.fms_mei_by_hach_fmsid,
+    c6.name_fms_cmsid_mei1,
+    c6.name_fms_cmsid_mei2,
+    h.first_po_date,
+    h.last_po_date,
+    h.hach_row_count
+FROM hach_by_code h
+LEFT JOIN tms_by_tcd t1
+  ON h.code = t1.code
+LEFT JOIN tms_by_ocd t2
+  ON h.code = t2.code
+LEFT JOIN cms_by_hach_cmsid c1
+  ON h.code = c1.code
+LEFT JOIN cms_by_hach_tid c2
+  ON h.code = c2.code
+LEFT JOIN cms_by_hach_ncdcmsid c3
+  ON h.code = c3.code
+LEFT JOIN cms_by_tms_tcd c4
+  ON h.code = c4.code
+LEFT JOIN cms_by_tms_ocd c5
+  ON h.code = c5.code
+LEFT JOIN fms_by_hach_fmsid f1
+  ON h.code = f1.code
+LEFT JOIN cms_via_fms c6
+  ON h.code = c6.code
+ORDER BY h.code;

@@ -1,0 +1,170 @@
+/*
+要件:
+- 取引先工場一覧の「名称」が空になるケースを潰すための探索クエリ
+
+方針:
+- NYKH（仕入ヘッダ）を母集団にする
+- 名称候補を複数ルートから取得し、優先順で1つに解決する
+*/
+WITH nykh_base AS (
+    SELECT
+        RTRIM(h.nykh_tcd) AS supplier_code,
+        RTRIM(h.nykh_ocd) AS supplier_ocd_code,
+        h.nykh_tid AS supplier_tid,
+        h.nykh_oid AS supplier_oid,
+        h.nykh_cmsid AS supplier_cmsid,
+        h.nykh_fmsid AS supplier_fmsid,
+        NULLIF(RTRIM(h.nykh_tekmei), '') AS nykh_tekmei,
+        NULLIF(RTRIM(h.nykh_fmsmei), '') AS nykh_fmsmei,
+        h.nykh_uribi AS purchase_date
+    FROM NYKH h
+    WHERE h.nykh_tcd IS NOT NULL
+      AND RTRIM(h.nykh_tcd) <> ''
+),
+supplier_agg AS (
+    SELECT
+        b.supplier_code,
+        MAX(NULLIF(b.supplier_ocd_code, '')) AS supplier_ocd_code,
+        MAX(CASE WHEN b.supplier_tid > 0 THEN b.supplier_tid END) AS supplier_tid,
+        MAX(CASE WHEN b.supplier_oid > 0 THEN b.supplier_oid END) AS supplier_oid,
+        MAX(CASE WHEN b.supplier_cmsid > 0 THEN b.supplier_cmsid END) AS supplier_cmsid,
+        MAX(CASE WHEN b.supplier_fmsid > 0 THEN b.supplier_fmsid END) AS supplier_fmsid,
+        MAX(b.nykh_tekmei) AS nykh_tekmei,
+        MAX(b.nykh_fmsmei) AS nykh_fmsmei,
+        MIN(b.purchase_date) AS first_purchase_date,
+        MAX(b.purchase_date) AS last_purchase_date,
+        COUNT(*) AS purchase_slip_count
+    FROM nykh_base b
+    GROUP BY b.supplier_code
+),
+name_by_cmsid AS (
+    SELECT
+        s.supplier_code,
+        MAX(NULLIF(RTRIM(c.cms_mei1), '')) AS name_cmsid_mei1,
+        MAX(NULLIF(RTRIM(c.cms_mei2), '')) AS name_cmsid_mei2
+    FROM supplier_agg s
+    LEFT JOIN CMS c
+      ON s.supplier_cmsid = c.cms_id
+    GROUP BY s.supplier_code
+),
+name_by_tid AS (
+    SELECT
+        s.supplier_code,
+        MAX(NULLIF(RTRIM(c.cms_mei1), '')) AS name_tid_mei1,
+        MAX(NULLIF(RTRIM(c.cms_mei2), '')) AS name_tid_mei2
+    FROM supplier_agg s
+    LEFT JOIN CMS c
+      ON s.supplier_tid = c.cms_id
+    GROUP BY s.supplier_code
+),
+name_by_oid AS (
+    SELECT
+        s.supplier_code,
+        MAX(NULLIF(RTRIM(c.cms_mei1), '')) AS name_oid_mei1,
+        MAX(NULLIF(RTRIM(c.cms_mei2), '')) AS name_oid_mei2
+    FROM supplier_agg s
+    LEFT JOIN CMS c
+      ON s.supplier_oid = c.cms_id
+    GROUP BY s.supplier_code
+),
+name_by_tcd AS (
+    SELECT
+        s.supplier_code,
+        MAX(NULLIF(RTRIM(c.cms_mei1), '')) AS name_tcd_mei1,
+        MAX(NULLIF(RTRIM(c.cms_mei2), '')) AS name_tcd_mei2
+    FROM supplier_agg s
+    LEFT JOIN TMS t
+      ON s.supplier_code = RTRIM(t.tms_tcd)
+    LEFT JOIN CMS c
+      ON t.tms_cmsid = c.cms_id
+    GROUP BY s.supplier_code
+),
+name_by_ocd AS (
+    SELECT
+        s.supplier_code,
+        MAX(NULLIF(RTRIM(c.cms_mei1), '')) AS name_ocd_mei1,
+        MAX(NULLIF(RTRIM(c.cms_mei2), '')) AS name_ocd_mei2
+    FROM supplier_agg s
+    LEFT JOIN TMS t
+      ON s.supplier_code = RTRIM(t.tms_ocd)
+    LEFT JOIN CMS c
+      ON t.tms_cmsid = c.cms_id
+    GROUP BY s.supplier_code
+),
+name_by_fmsid AS (
+    SELECT
+        s.supplier_code,
+        MAX(NULLIF(RTRIM(f.fms_dep), '')) AS name_fms_dep,
+        MAX(NULLIF(RTRIM(f.fms_mei), '')) AS name_fms_mei
+    FROM supplier_agg s
+    LEFT JOIN FMS f
+      ON s.supplier_fmsid = f.fms_id
+    GROUP BY s.supplier_code
+)
+SELECT
+    s.supplier_code AS 取引先コード,
+    COALESCE(
+        c1.name_cmsid_mei1,
+        c1.name_cmsid_mei2,
+        c2.name_tid_mei1,
+        c2.name_tid_mei2,
+        c3.name_oid_mei1,
+        c3.name_oid_mei2,
+        c4.name_tcd_mei1,
+        c4.name_tcd_mei2,
+        c5.name_ocd_mei1,
+        c5.name_ocd_mei2,
+        f1.name_fms_dep,
+        f1.name_fms_mei,
+        s.nykh_fmsmei,
+        s.nykh_tekmei,
+        ''
+    ) AS 取引先名_解決値,
+    CASE
+        WHEN c1.name_cmsid_mei1 IS NOT NULL THEN 'nykh_cmsid -> CMS.mei1'
+        WHEN c1.name_cmsid_mei2 IS NOT NULL THEN 'nykh_cmsid -> CMS.mei2'
+        WHEN c2.name_tid_mei1 IS NOT NULL THEN 'nykh_tid -> CMS.mei1'
+        WHEN c2.name_tid_mei2 IS NOT NULL THEN 'nykh_tid -> CMS.mei2'
+        WHEN c3.name_oid_mei1 IS NOT NULL THEN 'nykh_oid -> CMS.mei1'
+        WHEN c3.name_oid_mei2 IS NOT NULL THEN 'nykh_oid -> CMS.mei2'
+        WHEN c4.name_tcd_mei1 IS NOT NULL THEN 'nykh_tcd -> TMS -> CMS.mei1'
+        WHEN c4.name_tcd_mei2 IS NOT NULL THEN 'nykh_tcd -> TMS -> CMS.mei2'
+        WHEN c5.name_ocd_mei1 IS NOT NULL THEN 'nykh_tcd -> TMS.ocd -> CMS.mei1'
+        WHEN c5.name_ocd_mei2 IS NOT NULL THEN 'nykh_tcd -> TMS.ocd -> CMS.mei2'
+        WHEN f1.name_fms_dep IS NOT NULL THEN 'nykh_fmsid -> FMS.dep'
+        WHEN f1.name_fms_mei IS NOT NULL THEN 'nykh_fmsid -> FMS.mei'
+        WHEN s.nykh_fmsmei IS NOT NULL THEN 'NYKH.fmsmei'
+        WHEN s.nykh_tekmei IS NOT NULL THEN 'NYKH.tekmei'
+        ELSE 'NOT_FOUND'
+    END AS 名称解決ルート,
+    s.supplier_cmsid AS 参照ID_nykh_cmsid,
+    s.supplier_tid AS 参照ID_nykh_tid,
+    s.supplier_oid AS 参照ID_nykh_oid,
+    s.supplier_fmsid AS 参照ID_nykh_fmsid,
+    s.supplier_ocd_code AS 参照コード_nykh_ocd,
+    ISNULL(c1.name_cmsid_mei1, '') AS 候補_cmsid_mei1,
+    ISNULL(c2.name_tid_mei1, '') AS 候補_tid_mei1,
+    ISNULL(c3.name_oid_mei1, '') AS 候補_oid_mei1,
+    ISNULL(c4.name_tcd_mei1, '') AS 候補_tcd_mei1,
+    ISNULL(c5.name_ocd_mei1, '') AS 候補_ocd_mei1,
+    ISNULL(f1.name_fms_dep, '') AS 候補_fms_dep,
+    ISNULL(s.nykh_fmsmei, '') AS 候補_nykh_fmsmei,
+    ISNULL(s.nykh_tekmei, '') AS 候補_nykh_tekmei,
+    RTRIM(CAST(s.first_purchase_date AS VARCHAR(8))) AS 初回仕入日,
+    RTRIM(CAST(s.last_purchase_date AS VARCHAR(8))) AS 最終仕入日,
+    s.purchase_slip_count AS 仕入伝票件数
+FROM supplier_agg s
+LEFT JOIN name_by_cmsid c1
+  ON s.supplier_code = c1.supplier_code
+LEFT JOIN name_by_tid c2
+  ON s.supplier_code = c2.supplier_code
+LEFT JOIN name_by_oid c3
+  ON s.supplier_code = c3.supplier_code
+LEFT JOIN name_by_tcd c4
+  ON s.supplier_code = c4.supplier_code
+LEFT JOIN name_by_ocd c5
+  ON s.supplier_code = c5.supplier_code
+LEFT JOIN name_by_fmsid f1
+  ON s.supplier_code = f1.supplier_code
+ORDER BY
+    s.supplier_code;

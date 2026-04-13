@@ -1,0 +1,102 @@
+Jupyter Notebook 環境構築手順（Windows + 仮想環境）
+
+【目的】
+SKU分析用に、安定したPython環境とJupyter Notebookを構築する
+
+---
+
+■ 1. 作業フォルダ作成（短いパス推奨）
+
+【例】
+mkdir C:\work\21SJ-10
+cd C:\work\21SJ-10
+
+※ OneDrive配下は避ける（パス長エラー対策）
+
+---
+
+■ 2. 仮想環境の作成
+
+python -m venv .venv
+
+---
+
+■ 3. 仮想環境の有効化
+
+..venv\Scripts\activate
+
+※ 成功すると ( .venv ) と表示される
+
+---
+
+■ 4. pip更新
+
+python -m pip install --upgrade pip
+
+---
+
+■ 5. 必要ライブラリのインストール
+
+pip install pandas matplotlib notebook ipykernel
+
+---
+
+■ 6. カーネル登録
+
+python -m ipykernel install --user --name 21sj10_env --display-name "Python (21SJ-10)"
+
+---
+
+■ 7. Jupyter起動（どちらか）
+
+jupyter notebook
+
+または
+
+VS Codeで .ipynb を開く
+
+---
+
+■ 8. カーネル選択
+
+Notebook右上 → Select Kernel
+
+→ 「Python (21SJ-10)」を選択
+
+---
+
+■ 9. 動作確認
+
+セルに以下を入力して実行
+
+print("Notebook ready")
+
+---
+
+■ 10. 環境確認（重要）
+
+import sys
+print(sys.executable)
+
+→ .venv のパスが出ればOK
+
+---
+
+
+【推奨フォルダ構成】
+
+C:\work\21SJ-10
+.venv
+21SJ-10_analysis.ipynb
+data.csv
+
+---
+
+【重要ポイント】
+
+・カーネル = 実行環境
+・仮想環境ごとにカーネルを作る
+・プロジェクトごとに環境を分ける
+
+---
+

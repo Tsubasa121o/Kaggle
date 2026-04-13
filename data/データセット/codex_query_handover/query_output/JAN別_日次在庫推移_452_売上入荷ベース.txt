@@ -1,0 +1,166 @@
+/*
+目的:
+- 452始まりJANの日次在庫推移を、売上(SYKD)と入荷(NYKD/NYKH)から推定する
+
+前提:
+- 売上(正数)は在庫減、返品(売上の負数)は在庫増、入荷は在庫増
+- 振替/棚卸調整/その他調整はこのSQLには含めない
+
+出力:
+- 日付 x JAN の日次データ
+- 売上数量 / 返品数量 / 入荷数量 / 日次純増減
+- 在庫推定(2系統):
+  1) 繰越起点推定在庫: ZMS.zms_kuri 起点
+  2) 現在庫逆算起点推定在庫: ZMSN現在庫から逆算
+*/
+WITH params AS (
+    SELECT
+        20130101 AS from_yyyymmdd,
+        CAST(CONVERT(VARCHAR(8), GETDATE(), 112) AS INT) AS to_yyyymmdd,
+        CAST(CONVERT(VARCHAR(8), GETDATE(), 112) AS DATE) AS to_date
+),
+target_jan AS (
+    SELECT DISTINCT RTRIM(s.sms_scd) AS jan_code
+    FROM SMS s
+    WHERE RTRIM(s.sms_scd) LIKE '452%'
+),
+item_attr AS (
+    SELECT
+        RTRIM(s.sms_scd) AS jan_code,
+        MAX(RTRIM(s.sms_mei)) AS item_name
+    FROM SMS s
+    WHERE RTRIM(s.sms_scd) LIKE '452%'
+    GROUP BY RTRIM(s.sms_scd)
+),
+sales_daily AS (
+    SELECT
+        RTRIM(d.sykd_scd) AS jan_code,
+        d.sykd_uribi AS yyyymmdd,
+        SUM(CASE WHEN CAST(d.sykd_suryo AS DECIMAL(18,2)) > 0
+                 THEN CAST(d.sykd_suryo AS DECIMAL(18,2))
+                 ELSE 0 END) AS sales_qty,
+        SUM(CASE WHEN CAST(d.sykd_suryo AS DECIMAL(18,2)) < 0
+                 THEN ABS(CAST(d.sykd_suryo AS DECIMAL(18,2)))
+                 ELSE 0 END) AS return_qty
+    FROM SYKD d
+    CROSS JOIN params p
+    WHERE RTRIM(d.sykd_scd) LIKE '452%'
+      AND d.sykd_uribi BETWEEN p.from_yyyymmdd AND p.to_yyyymmdd
+    GROUP BY
+        RTRIM(d.sykd_scd),
+        d.sykd_uribi
+),
+receipt_daily AS (
+    SELECT
+        RTRIM(d.nykd_scd) AS jan_code,
+        h.nykh_uribi AS yyyymmdd,
+        SUM(CASE WHEN CAST(d.nykd_suryo AS DECIMAL(18,2)) > 0
+                 THEN CAST(d.nykd_suryo AS DECIMAL(18,2))
+                 ELSE 0 END) AS receipt_qty
+    FROM NYKD d
+    JOIN NYKH h
+      ON d.nykd_hid = h.nykh_id
+    CROSS JOIN params p
+    WHERE RTRIM(d.nykd_scd) LIKE '452%'
+      AND h.nykh_uribi BETWEEN p.from_yyyymmdd AND p.to_yyyymmdd
+    GROUP BY
+        RTRIM(d.nykd_scd),
+        h.nykh_uribi
+),
+daily_movement AS (
+    SELECT
+        COALESCE(s.jan_code, r.jan_code) AS jan_code,
+        COALESCE(s.yyyymmdd, r.yyyymmdd) AS yyyymmdd,
+        ISNULL(s.sales_qty, 0) AS sales_qty,
+        ISNULL(s.return_qty, 0) AS return_qty,
+        ISNULL(r.receipt_qty, 0) AS receipt_qty,
+        ISNULL(r.receipt_qty, 0) - ISNULL(s.sales_qty, 0) + ISNULL(s.return_qty, 0) AS net_qty
+    FROM sales_daily s
+    FULL OUTER JOIN receipt_daily r
+      ON s.jan_code = r.jan_code
+     AND s.yyyymmdd = r.yyyymmdd
+),
+carry_stock AS (
+    SELECT
+        RTRIM(z.zms_scd) AS jan_code,
+        SUM(CAST(z.zms_kuri AS DECIMAL(18,2))) AS carry_qty
+    FROM ZMS z
+    WHERE RTRIM(z.zms_scd) LIKE '452%'
+    GROUP BY RTRIM(z.zms_scd)
+),
+current_stock AS (
+    SELECT
+        RTRIM(z.zmsn_scd) AS jan_code,
+        SUM(CAST(z.zmsn_zai AS DECIMAL(18,2))) AS current_qty
+    FROM ZMSN z
+    WHERE RTRIM(z.zmsn_scd) LIKE '452%'
+    GROUP BY RTRIM(z.zmsn_scd)
+),
+date_series AS (
+    SELECT
+        TRY_CONVERT(DATE, CONVERT(VARCHAR(8), p.from_yyyymmdd), 112) AS dt
+    FROM params p
+    UNION ALL
+    SELECT DATEADD(DAY, 1, ds.dt)
+    FROM date_series ds
+    CROSS JOIN params p
+    WHERE ds.dt < p.to_date
+),
+calendar AS (
+    SELECT
+        j.jan_code,
+        CONVERT(INT, CONVERT(VARCHAR(8), d.dt, 112)) AS yyyymmdd
+    FROM target_jan j
+    CROSS JOIN date_series d
+),
+daily_filled AS (
+    SELECT
+        c.jan_code,
+        c.yyyymmdd,
+        ISNULL(m.sales_qty, 0) AS sales_qty,
+        ISNULL(m.return_qty, 0) AS return_qty,
+        ISNULL(m.receipt_qty, 0) AS receipt_qty,
+        ISNULL(m.net_qty, 0) AS net_qty
+    FROM calendar c
+    LEFT JOIN daily_movement m
+      ON c.jan_code = m.jan_code
+     AND c.yyyymmdd = m.yyyymmdd
+),
+with_window AS (
+    SELECT
+        f.jan_code,
+        f.yyyymmdd,
+        f.sales_qty,
+        f.return_qty,
+        f.receipt_qty,
+        f.net_qty,
+        SUM(f.net_qty) OVER (
+            PARTITION BY f.jan_code
+            ORDER BY f.yyyymmdd
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS cum_net_qty,
+        SUM(f.net_qty) OVER (PARTITION BY f.jan_code) AS total_net_qty
+    FROM daily_filled f
+)
+SELECT
+    w.jan_code AS JANコード,
+    ISNULL(i.item_name, '') AS 品名,
+    RTRIM(CAST(w.yyyymmdd AS VARCHAR(8))) AS 日付,
+    w.sales_qty AS 売上数量,
+    w.return_qty AS 返品数量,
+    w.receipt_qty AS 入荷数量,
+    w.net_qty AS 日次純増減,
+    ISNULL(cs.carry_qty, 0) + w.cum_net_qty AS 在庫推定_繰越起点,
+    ISNULL(cur.current_qty, 0) - w.total_net_qty + w.cum_net_qty AS 在庫推定_現在庫逆算起点,
+    ISNULL(cur.current_qty, 0) AS 現在庫参照
+FROM with_window w
+LEFT JOIN item_attr i
+  ON w.jan_code = i.jan_code
+LEFT JOIN carry_stock cs
+  ON w.jan_code = cs.jan_code
+LEFT JOIN current_stock cur
+  ON w.jan_code = cur.jan_code
+ORDER BY
+    w.jan_code,
+    w.yyyymmdd
+OPTION (MAXRECURSION 0);

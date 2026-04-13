@@ -1,0 +1,16 @@
+/*
+Need:
+- code and name only
+*/
+SELECT
+    RTRIM(t.tms_tcd) AS code,
+    COALESCE(
+        NULLIF(RTRIM(c.cms_mei1), ''),
+        NULLIF(RTRIM(c.cms_mei2), ''),
+        ''
+    ) AS name
+FROM TMS t
+LEFT JOIN CMS c
+    ON t.tms_cmsid = c.cms_id
+WHERE RTRIM(t.tms_tcd) <> ''
+ORDER BY RTRIM(t.tms_tcd);

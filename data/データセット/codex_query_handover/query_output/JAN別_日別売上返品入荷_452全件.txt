@@ -1,0 +1,84 @@
+/*
+要件:
+- JAN頭が452で始まる商品の日別データ
+- 売上 / 返品 / 入荷 を1日1JAN単位で集計
+- 在庫受払帳の主要イベントをDBテーブルから再現するための基礎クエリ
+注意:
+- 在庫受払帳の「在庫数」「振替」「棚卸調整」「繰越在庫」「期間合計」はこのSQLでは再現しない
+- 在庫数の日次再現には、在庫受払帳の元テーブルまたは繰越在庫ロジックが別途必要
+*/
+WITH today_param AS (
+    SELECT CAST(CONVERT(VARCHAR(8), GETDATE(), 112) AS INT) AS today_yyyymmdd
+),
+sales_daily AS (
+    SELECT
+        RTRIM(d.sykd_scd)                           AS jan_code,
+        d.sykd_uribi                                AS target_date,
+        MAX(RTRIM(d.sykd_mei))                      AS item_name,
+        SUM(CASE WHEN CAST(d.sykd_suryo AS DECIMAL(18,2)) > 0
+                 THEN CAST(d.sykd_suryo AS DECIMAL(18,2))
+                 ELSE 0 END)                        AS sales_qty,
+        SUM(CASE WHEN CAST(d.sykd_suryo AS DECIMAL(18,2)) < 0
+                 THEN ABS(CAST(d.sykd_suryo AS DECIMAL(18,2)))
+                 ELSE 0 END)                        AS return_qty
+    FROM SYKD d
+    CROSS JOIN today_param p
+    WHERE RTRIM(d.sykd_scd) LIKE '452%'
+      AND d.sykd_uribi <= p.today_yyyymmdd
+    GROUP BY
+        RTRIM(d.sykd_scd),
+        d.sykd_uribi
+),
+receipt_daily AS (
+    SELECT
+        RTRIM(d.nykd_scd)                           AS jan_code,
+        h.nykh_uribi                                AS target_date,
+        MAX(RTRIM(d.nykd_mei))                      AS item_name,
+        SUM(CASE WHEN CAST(d.nykd_suryo AS DECIMAL(18,2)) > 0
+                 THEN CAST(d.nykd_suryo AS DECIMAL(18,2))
+                 ELSE 0 END)                        AS receipt_qty
+    FROM NYKD d
+    JOIN NYKH h
+        ON d.nykd_hid = h.nykh_id
+    CROSS JOIN today_param p
+    WHERE RTRIM(d.nykd_scd) LIKE '452%'
+      AND h.nykh_uribi <= p.today_yyyymmdd
+    GROUP BY
+        RTRIM(d.nykd_scd),
+        h.nykh_uribi
+),
+daily_union AS (
+    SELECT
+        s.jan_code,
+        s.target_date,
+        s.item_name,
+        s.sales_qty,
+        s.return_qty,
+        CAST(0 AS DECIMAL(18,2))                    AS receipt_qty
+    FROM sales_daily s
+
+    UNION ALL
+
+    SELECT
+        r.jan_code,
+        r.target_date,
+        r.item_name,
+        CAST(0 AS DECIMAL(18,2))                    AS sales_qty,
+        CAST(0 AS DECIMAL(18,2))                    AS return_qty,
+        r.receipt_qty
+    FROM receipt_daily r
+)
+SELECT
+    u.jan_code                                      AS JANコード,
+    MAX(u.item_name)                                AS 品名,
+    RTRIM(CAST(u.target_date AS VARCHAR(8)))        AS 日付,
+    SUM(u.sales_qty)                                AS 売上数量,
+    SUM(u.return_qty)                               AS 返品数量,
+    SUM(u.receipt_qty)                              AS 入荷数量
+FROM daily_union u
+GROUP BY
+    u.jan_code,
+    u.target_date
+ORDER BY
+    u.jan_code,
+    u.target_date;
