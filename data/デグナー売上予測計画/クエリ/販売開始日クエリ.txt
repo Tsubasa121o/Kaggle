@@ -1,51 +1,50 @@
 /*
-要件:
-- JAN頭が452で始まる商品のみ
-- 各JANをキーに販売開始日(最初の売上日)のみを取得
-- 販売開始日は正数売上が初めて発生した日
+Purpose:
+- Target JAN codes that start with 452
+- Return first positive-sale date per JAN
 */
 WITH today_param AS (
     SELECT CAST(CONVERT(VARCHAR(8), GETDATE(), 112) AS INT) AS today_yyyymmdd
 ),
 sales_base AS (
     SELECT
-        RTRIM(d.sykd_scd)                           AS jan_code,
-        d.sykd_uribi                                AS sale_date,
-        RTRIM(d.sykd_mei)                           AS detail_name,
-        RTRIM(d.sykd_color)                         AS detail_color,
-        RTRIM(d.sykd_size)                          AS detail_size
+        RTRIM(d.sykd_scd) AS jan_code
+      , d.sykd_uribi AS sale_date
+      , RTRIM(d.sykd_mei) AS detail_name
+      , RTRIM(d.sykd_color) AS detail_color
+      , RTRIM(d.sykd_size) AS detail_size
     FROM SYKD d
     CROSS JOIN today_param p
     WHERE RTRIM(d.sykd_scd) LIKE '452%'
       AND d.sykd_uribi <= p.today_yyyymmdd
-      AND d.sykd_suryo > 0
+      AND CAST(d.sykd_suryo AS DECIMAL(18,2)) > 0
 ),
 sales_start AS (
     SELECT
-        b.jan_code,
-        MIN(b.sale_date)                            AS sales_start_date,
-        MAX(b.detail_name)                          AS detail_name,
-        MAX(b.detail_color)                         AS detail_color,
-        MAX(b.detail_size)                          AS detail_size
+        b.jan_code
+      , MIN(b.sale_date) AS sales_start_date
+      , MAX(b.detail_name) AS detail_name
+      , MAX(b.detail_color) AS detail_color
+      , MAX(b.detail_size) AS detail_size
     FROM sales_base b
     GROUP BY b.jan_code
 ),
 sms_attr AS (
     SELECT
-        RTRIM(s.sms_scd)                            AS jan_code,
-        MAX(RTRIM(s.sms_mei))                       AS sms_name,
-        MAX(RTRIM(s.sms_color))                     AS sms_color,
-        MAX(RTRIM(s.sms_size))                      AS sms_size
+        RTRIM(s.sms_scd) AS jan_code
+      , MAX(RTRIM(s.sms_mei)) AS sms_name
+      , MAX(RTRIM(s.sms_color)) AS sms_color
+      , MAX(RTRIM(s.sms_size)) AS sms_size
     FROM SMS s
     WHERE RTRIM(s.sms_scd) LIKE '452%'
     GROUP BY RTRIM(s.sms_scd)
 )
 SELECT
-    s.jan_code                                      AS JANコード,
-    COALESCE(NULLIF(a.sms_name, ''),  s.detail_name)  AS 品名,
-    COALESCE(NULLIF(a.sms_color, ''), s.detail_color) AS カラー,
-    COALESCE(NULLIF(a.sms_size, ''),  s.detail_size)  AS サイズ,
-    RTRIM(CAST(s.sales_start_date AS VARCHAR(8)))   AS 販売開始日
+    s.jan_code AS jan_code
+  , COALESCE(NULLIF(a.sms_name, ''), s.detail_name) AS item_name
+  , COALESCE(NULLIF(a.sms_color, ''), s.detail_color) AS color
+  , COALESCE(NULLIF(a.sms_size, ''), s.detail_size) AS size
+  , RTRIM(CAST(s.sales_start_date AS VARCHAR(8))) AS sales_start_date
 FROM sales_start s
 LEFT JOIN sms_attr a
     ON s.jan_code = a.jan_code

@@ -1,0 +1,165 @@
+/*
+Purpose:
+- Extract order/receipt details for the last 2 years
+- Match receipts to orders by po_no + jan_code
+- Compute matched receipt quantity for partial delivery analysis
+*/
+IF OBJECT_ID('tempdb..#detail_with_alloc') IS NOT NULL
+    DROP TABLE #detail_with_alloc;
+
+;WITH params AS (
+    SELECT
+        CAST(CONVERT(VARCHAR(8), DATEADD(YEAR, -2, CAST(GETDATE() AS DATE)), 112) AS INT) AS from_yyyymmdd
+      , CAST(CONVERT(VARCHAR(8), CAST(GETDATE() AS DATE), 112) AS INT) AS to_yyyymmdd
+),
+orders AS (
+    SELECT
+        h.hach_jno AS po_no
+      , h.hach_jucbi AS po_date_int
+      , TRY_CONVERT(DATE, CONVERT(VARCHAR(8), h.hach_jucbi), 112) AS po_date
+      , RTRIM(h.hach_tcd) AS vendor_code
+      , RTRIM(d.hacd_scd) AS jan_code
+      , MAX(RTRIM(d.hacd_mei)) AS item_name
+      , MAX(RTRIM(d.hacd_kikaku)) AS model_no
+      , MAX(RTRIM(d.hacd_color)) AS color
+      , MAX(RTRIM(d.hacd_size)) AS size
+      , SUM(CAST(d.hacd_suryo AS DECIMAL(18,2))) AS po_qty
+    FROM HACD d
+    JOIN HACH h
+        ON d.hacd_hid = h.hach_id
+    CROSS JOIN params p
+    WHERE h.hach_jucbi BETWEEN p.from_yyyymmdd AND p.to_yyyymmdd
+      AND h.hach_jno IS NOT NULL
+      AND h.hach_jno <> 0
+      AND RTRIM(d.hacd_scd) <> ''
+    GROUP BY
+        h.hach_jno
+      , h.hach_jucbi
+      , RTRIM(h.hach_tcd)
+      , RTRIM(d.hacd_scd)
+),
+receipts_daily AS (
+    SELECT
+        h.nykh_mjno AS po_no
+      , RTRIM(d.nykd_scd) AS jan_code
+      , h.nykh_uribi AS receipt_date_int
+      , TRY_CONVERT(DATE, CONVERT(VARCHAR(8), h.nykh_uribi), 112) AS receipt_date
+      , SUM(CASE
+                WHEN CAST(d.nykd_suryo AS DECIMAL(18,2)) > 0
+                    THEN CAST(d.nykd_suryo AS DECIMAL(18,2))
+                ELSE 0
+            END) AS receipt_qty
+    FROM NYKD d
+    JOIN NYKH h
+        ON d.nykd_hid = h.nykh_id
+    CROSS JOIN params p
+    WHERE h.nykh_uribi BETWEEN p.from_yyyymmdd AND p.to_yyyymmdd
+      AND h.nykh_mjno IS NOT NULL
+      AND h.nykh_mjno <> 0
+      AND RTRIM(d.nykd_scd) <> ''
+    GROUP BY
+        h.nykh_mjno
+      , RTRIM(d.nykd_scd)
+      , h.nykh_uribi
+),
+order_receipt AS (
+    SELECT
+        o.po_no
+      , o.po_date_int
+      , o.po_date
+      , o.vendor_code
+      , o.jan_code
+      , o.item_name
+      , o.model_no
+      , o.color
+      , o.size
+      , o.po_qty
+      , r.receipt_date_int
+      , r.receipt_date
+      , COALESCE(r.receipt_qty, 0) AS receipt_qty
+    FROM orders o
+    LEFT JOIN receipts_daily r
+        ON o.po_no = r.po_no
+       AND o.jan_code = r.jan_code
+       AND r.receipt_date_int >= o.po_date_int
+),
+order_receipt_enriched AS (
+    SELECT
+        x.*
+      , SUM(x.receipt_qty) OVER (
+            PARTITION BY x.po_no, x.jan_code
+            ORDER BY x.receipt_date_int
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS cum_receipt_qty
+    FROM order_receipt x
+),
+detail AS (
+    SELECT
+        e.po_no
+      , e.po_date_int
+      , e.po_date
+      , e.vendor_code
+      , e.jan_code
+      , e.item_name
+      , e.model_no
+      , e.color
+      , e.size
+      , e.po_qty
+      , e.receipt_date_int
+      , e.receipt_date
+      , e.receipt_qty
+      , COALESCE(
+            LAG(e.cum_receipt_qty) OVER (
+                PARTITION BY e.po_no, e.jan_code
+                ORDER BY e.receipt_date_int
+            ),
+            0
+        ) AS cum_receipt_qty_prev
+      , e.cum_receipt_qty
+    FROM order_receipt_enriched e
+),
+detail_with_alloc AS (
+    SELECT
+        d.*
+      , CASE
+            WHEN d.receipt_date_int IS NULL THEN CAST(0 AS DECIMAL(18,2))
+            WHEN d.cum_receipt_qty_prev >= d.po_qty THEN CAST(0 AS DECIMAL(18,2))
+            WHEN d.cum_receipt_qty <= d.po_qty THEN d.receipt_qty
+            ELSE d.po_qty - d.cum_receipt_qty_prev
+        END AS matched_receipt_qty
+      , CASE
+            WHEN d.receipt_date_int IS NULL THEN NULL
+            ELSE DATEDIFF(DAY, d.po_date, d.receipt_date)
+        END AS lead_days_from_po
+    FROM detail d
+)
+SELECT *
+INTO #detail_with_alloc
+FROM detail_with_alloc;
+
+SELECT
+    po_no
+  , po_date_int AS po_date_yyyymmdd
+  , po_date
+  , vendor_code
+  , jan_code
+  , item_name
+  , model_no
+  , color
+  , size
+  , po_qty
+  , receipt_date_int AS receipt_date_yyyymmdd
+  , receipt_date
+  , receipt_qty
+  , cum_receipt_qty_prev
+  , cum_receipt_qty
+  , matched_receipt_qty
+  , lead_days_from_po
+FROM #detail_with_alloc
+ORDER BY
+    po_date_int
+  , vendor_code
+  , jan_code
+  , receipt_date_int;
+
+DROP TABLE #detail_with_alloc;

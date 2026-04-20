@@ -1,0 +1,47 @@
+【対象クエリ】
+在庫受払帳再現クエリ.txt
+
+【目的】
+- 在庫受払帳の列構成をDBから再現して、Pythonで欠品期間算出しやすい形にする
+
+【出力列（在庫受払帳互換）】
+- 倉庫コード
+- 倉庫名
+- データ区分（5=繰越 / 10=明細 / 40=期間合計）
+- 商品コード
+- 商品名
+- 入数
+- ロケーションNo
+- 入出荷日
+- 伝票識別
+- 伝票No
+- 仕入単価
+- 入荷数
+- 出荷数
+- 在庫数
+- 入出荷先名
+
+【イベントソース】
+- 売上: SYKD/SYKH
+- 仕入: NYKD/NYKH
+- 振替: FRID/FRIH（元倉庫・先倉庫の両脚を生成）
+- 出荷: URID/URIH
+- 倉庫名: EMSB
+- ロケーションNo/繰越: ZMS
+- 現在庫: ZMSN
+- 取引先名: TMS/CMS
+
+【主要パラメータ】
+- `@from_yyyymmdd` / `@to_yyyymmdd`
+- `@jan_prefix`（初期: `452`）
+- `@stock_scope`（`ALL_STORES` / `HQ_ONLY` / `HQ_AND_HACHIOJI`、既定は `HQ_ONLY`）
+- `@stock_anchor_mode`（`CURRENT_REVERSE` / `CARRY_FORWARD`）
+
+【在庫数の作り方】
+- 明細行の増減: `net_qty = 入荷数 - 出荷数`
+- `CURRENT_REVERSE`: ZMSN現在庫に終点を合わせて逆算
+- `CARRY_FORWARD`: ZMS.zms_kuri を起点に前向き累積
+
+【注意点】
+- 商魂商管の帳票エンジンが内部で付与する行（細かな帳票制御行）までは完全一致しない可能性があります。
+- ただし、Python側で使う受払イベント列（入出荷日/伝票識別/入荷数/出荷数/在庫数/入出荷先名）は揃えています。

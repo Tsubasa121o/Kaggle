@@ -1,0 +1,48 @@
+【対象クエリ】
+リードタイムクエリ.txt
+
+【目的】
+直近2年の発注と入荷を「発注No + JAN」で突合し、工場別リードタイム計算に使う明細を出力します。
+
+【主な参照テーブル】
+- HACD / HACH（発注明細 / 発注ヘッダ）
+- NYKD / NYKH（入荷明細 / 入荷ヘッダ）
+
+【ロジック概要】
+1. 発注データを「発注No・発注日・JAN」単位に集約します。
+2. 入荷データを「発注No・入荷日・JAN」単位に集約します。
+3. 発注と入荷を `po_no + jan_code` で結合します。
+4. 入荷累計（直前・当該）をウィンドウ関数で算出します。
+5. 発注数量に対応する入荷数量（matched_receipt_qty）を計算します。
+6. 発注日から入荷日までの日数（lead_days_from_po）を算出します。
+
+【抽出条件】
+- 期間: 本日基準で過去2年
+- 発注No/入荷紐付No は 0/NULL を除外
+- JAN空欄を除外
+
+【出力粒度】
+- 発注No × JAN × 入荷日
+- 入荷がない発注行も残る（入荷列はNULL/0）
+
+【出力列】
+- po_no
+- po_date_yyyymmdd
+- po_date
+- vendor_code
+- jan_code
+- item_name
+- model_no
+- color
+- size
+- po_qty
+- receipt_date_yyyymmdd
+- receipt_date
+- receipt_qty
+- cum_receipt_qty_prev
+- cum_receipt_qty
+- matched_receipt_qty
+- lead_days_from_po
+
+【注意点】
+- 分納（部分入荷）を考慮した割当数量を返すため、単純な入荷合計とは一致しない場合があります。

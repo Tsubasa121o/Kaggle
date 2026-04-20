@@ -1,0 +1,439 @@
+/*
+目的:
+- 在庫受払帳の列構成をDBテーブルから再現する
+- 欠品期間ロジックは含めず、Python側で期間算出できる形の明細を返す
+
+出力列（在庫受払帳互換）:
+- 倉庫コード, 倉庫名, データ区分, 商品コード, 商品名, 入数, ロケーションNo,
+  入出荷日, 伝票識別, 伝票No, 仕入単価, 入荷数, 出荷数, 在庫数, 入出荷先名
+
+前提:
+- データ区分: 5=繰越, 10=明細, 40=期間合計
+- 在庫数は `@stock_anchor_mode` で推定
+  - CURRENT_REVERSE: ZMSN現在庫逆算（終点一致）
+  - CARRY_FORWARD:   ZMS.zms_kuri 起点（前向き累積）
+*/
+SET NOCOUNT ON;
+
+DECLARE @from_yyyymmdd INT = 20081101;
+DECLARE @to_yyyymmdd INT = CAST(CONVERT(VARCHAR(8), GETDATE(), 112) AS INT);
+DECLARE @jan_prefix NVARCHAR(10) = N'452';
+DECLARE @stock_scope NVARCHAR(20) = N'HQ_ONLY'; -- ALL_STORES / HQ_ONLY / HQ_AND_HACHIOJI
+DECLARE @stock_anchor_mode NVARCHAR(30) = N'CURRENT_REVERSE'; -- CURRENT_REVERSE / CARRY_FORWARD
+
+DECLARE @target_souko_list TABLE (souko NCHAR(6) PRIMARY KEY);
+IF @stock_scope = N'HQ_ONLY'
+BEGIN
+    INSERT INTO @target_souko_list (souko) VALUES (N'0000');
+END
+ELSE IF @stock_scope = N'HQ_AND_HACHIOJI'
+BEGIN
+    INSERT INTO @target_souko_list (souko) VALUES (N'0000'), (N'0003');
+END
+
+;WITH sales_events AS (
+    SELECT
+        RTRIM(d.sykd_souko) AS warehouse_code,
+        RTRIM(d.sykd_scd) AS jan_code,
+        RTRIM(d.sykd_mei) AS item_name,
+        CAST(d.sykd_iri AS DECIMAL(18,2)) AS iri_qty,
+        d.sykd_uribi AS event_date,
+        N'売上' AS slip_type,
+        h.sykh_denno AS slip_no,
+        CAST(d.sykd_tanka AS DECIMAL(18,2)) AS unit_price,
+        CAST(NULL AS DECIMAL(18,2)) AS in_qty,
+        CAST(d.sykd_suryo AS DECIMAL(18,2)) AS out_qty,
+        CAST(0 AS DECIMAL(18,2)) - CAST(d.sykd_suryo AS DECIMAL(18,2)) AS net_qty,
+        ISNULL(RTRIM(c.cms_mei1), N'') AS partner_name,
+        20 AS source_order
+    FROM SYKD d
+    JOIN SYKH h
+      ON d.sykd_hid = h.sykh_id
+    LEFT JOIN TMS t
+      ON RTRIM(d.sykd_tcd) = RTRIM(t.tms_tcd)
+    LEFT JOIN CMS c
+      ON t.tms_cmsid = c.cms_id
+    WHERE RTRIM(d.sykd_scd) LIKE @jan_prefix + N'%'
+      AND d.sykd_uribi BETWEEN @from_yyyymmdd AND @to_yyyymmdd
+      AND CAST(d.sykd_suryo AS DECIMAL(18,2)) <> 0
+      AND (
+            @stock_scope = N'ALL_STORES'
+            OR EXISTS (
+                SELECT 1
+                FROM @target_souko_list hs
+                WHERE RTRIM(d.sykd_souko) = RTRIM(hs.souko)
+            )
+      )
+),
+receipt_events AS (
+    SELECT
+        RTRIM(d.nykd_souko) AS warehouse_code,
+        RTRIM(d.nykd_scd) AS jan_code,
+        RTRIM(d.nykd_mei) AS item_name,
+        CAST(d.nykd_iri AS DECIMAL(18,2)) AS iri_qty,
+        h.nykh_uribi AS event_date,
+        N'仕入' AS slip_type,
+        h.nykh_denno AS slip_no,
+        CAST(d.nykd_tanka AS DECIMAL(18,2)) AS unit_price,
+        CAST(d.nykd_suryo AS DECIMAL(18,2)) AS in_qty,
+        CAST(NULL AS DECIMAL(18,2)) AS out_qty,
+        CAST(d.nykd_suryo AS DECIMAL(18,2)) AS net_qty,
+        ISNULL(RTRIM(c.cms_mei1), N'') AS partner_name,
+        10 AS source_order
+    FROM NYKD d
+    JOIN NYKH h
+      ON d.nykd_hid = h.nykh_id
+    LEFT JOIN TMS t
+      ON RTRIM(h.nykh_tcd) = RTRIM(t.tms_tcd)
+    LEFT JOIN CMS c
+      ON t.tms_cmsid = c.cms_id
+    WHERE RTRIM(d.nykd_scd) LIKE @jan_prefix + N'%'
+      AND h.nykh_uribi BETWEEN @from_yyyymmdd AND @to_yyyymmdd
+      AND CAST(d.nykd_suryo AS DECIMAL(18,2)) <> 0
+      AND (
+            @stock_scope = N'ALL_STORES'
+            OR EXISTS (
+                SELECT 1
+                FROM @target_souko_list hs
+                WHERE RTRIM(d.nykd_souko) = RTRIM(hs.souko)
+            )
+      )
+),
+transfer_events AS (
+    -- 振替出庫（元倉庫）
+    SELECT
+        RTRIM(h.frih_ssouko) AS warehouse_code,
+        RTRIM(d.frid_scd) AS jan_code,
+        RTRIM(d.frid_mei) AS item_name,
+        CAST(d.frid_iri AS DECIMAL(18,2)) AS iri_qty,
+        h.frih_uribi AS event_date,
+        N'振替' AS slip_type,
+        h.frih_denno AS slip_no,
+        CAST(d.frid_tanka AS DECIMAL(18,2)) AS unit_price,
+        CAST(NULL AS DECIMAL(18,2)) AS in_qty,
+        CAST(d.frid_suryo AS DECIMAL(18,2)) AS out_qty,
+        CAST(0 AS DECIMAL(18,2)) - CAST(d.frid_suryo AS DECIMAL(18,2)) AS net_qty,
+        ISNULL(N'振替先:' + RTRIM(ws.emsb_str), N'振替先') AS partner_name,
+        30 AS source_order
+    FROM FRID d
+    JOIN FRIH h
+      ON d.frid_hid = h.frih_id
+    LEFT JOIN EMSB ws
+      ON RTRIM(h.frih_nsouko) = RTRIM(ws.emsb_kbn)
+    WHERE RTRIM(d.frid_scd) LIKE @jan_prefix + N'%'
+      AND h.frih_uribi BETWEEN @from_yyyymmdd AND @to_yyyymmdd
+      AND CAST(d.frid_suryo AS DECIMAL(18,2)) <> 0
+      AND (
+            @stock_scope = N'ALL_STORES'
+            OR EXISTS (
+                SELECT 1
+                FROM @target_souko_list hs
+                WHERE RTRIM(h.frih_ssouko) = RTRIM(hs.souko)
+            )
+      )
+
+    UNION ALL
+
+    -- 振替入庫（先倉庫）
+    SELECT
+        RTRIM(h.frih_nsouko) AS warehouse_code,
+        RTRIM(d.frid_scd) AS jan_code,
+        RTRIM(d.frid_mei) AS item_name,
+        CAST(d.frid_iri AS DECIMAL(18,2)) AS iri_qty,
+        h.frih_uribi AS event_date,
+        N'振替' AS slip_type,
+        h.frih_denno AS slip_no,
+        CAST(d.frid_tanka AS DECIMAL(18,2)) AS unit_price,
+        CAST(d.frid_suryo AS DECIMAL(18,2)) AS in_qty,
+        CAST(NULL AS DECIMAL(18,2)) AS out_qty,
+        CAST(d.frid_suryo AS DECIMAL(18,2)) AS net_qty,
+        ISNULL(N'振替元:' + RTRIM(ws.emsb_str), N'振替元') AS partner_name,
+        31 AS source_order
+    FROM FRID d
+    JOIN FRIH h
+      ON d.frid_hid = h.frih_id
+    LEFT JOIN EMSB ws
+      ON RTRIM(h.frih_ssouko) = RTRIM(ws.emsb_kbn)
+    WHERE RTRIM(d.frid_scd) LIKE @jan_prefix + N'%'
+      AND h.frih_uribi BETWEEN @from_yyyymmdd AND @to_yyyymmdd
+      AND CAST(d.frid_suryo AS DECIMAL(18,2)) <> 0
+      AND (
+            @stock_scope = N'ALL_STORES'
+            OR EXISTS (
+                SELECT 1
+                FROM @target_souko_list hs
+                WHERE RTRIM(h.frih_nsouko) = RTRIM(hs.souko)
+            )
+      )
+),
+shipment_events AS (
+    SELECT
+        RTRIM(d.urid_souko) AS warehouse_code,
+        RTRIM(d.urid_scd) AS jan_code,
+        RTRIM(d.urid_mei) AS item_name,
+        CAST(d.urid_iri AS DECIMAL(18,2)) AS iri_qty,
+        h.urih_uribi AS event_date,
+        N'出荷' AS slip_type,
+        h.urih_denno AS slip_no,
+        CAST(d.urid_tanka AS DECIMAL(18,2)) AS unit_price,
+        CAST(NULL AS DECIMAL(18,2)) AS in_qty,
+        CAST(d.urid_suryo AS DECIMAL(18,2)) AS out_qty,
+        CAST(0 AS DECIMAL(18,2)) - CAST(d.urid_suryo AS DECIMAL(18,2)) AS net_qty,
+        ISNULL(RTRIM(c.cms_mei1), N'') AS partner_name,
+        40 AS source_order
+    FROM URID d
+    JOIN URIH h
+      ON d.urid_hid = h.urih_id
+    LEFT JOIN TMS t
+      ON RTRIM(h.urih_tcd) = RTRIM(t.tms_tcd)
+    LEFT JOIN CMS c
+      ON t.tms_cmsid = c.cms_id
+    WHERE RTRIM(d.urid_scd) LIKE @jan_prefix + N'%'
+      AND h.urih_uribi BETWEEN @from_yyyymmdd AND @to_yyyymmdd
+      AND CAST(d.urid_suryo AS DECIMAL(18,2)) <> 0
+      AND (
+            @stock_scope = N'ALL_STORES'
+            OR EXISTS (
+                SELECT 1
+                FROM @target_souko_list hs
+                WHERE RTRIM(d.urid_souko) = RTRIM(hs.souko)
+            )
+      )
+),
+detail_events AS (
+    SELECT * FROM sales_events
+    UNION ALL
+    SELECT * FROM receipt_events
+    UNION ALL
+    SELECT * FROM transfer_events
+    UNION ALL
+    SELECT * FROM shipment_events
+),
+current_stock AS (
+    SELECT
+        RTRIM(z.zmsn_souko) AS warehouse_code,
+        RTRIM(z.zmsn_scd) AS jan_code,
+        SUM(CAST(z.zmsn_zai AS DECIMAL(18,2))) AS current_qty
+    FROM ZMSN z
+    WHERE RTRIM(z.zmsn_scd) LIKE @jan_prefix + N'%'
+      AND (
+            @stock_scope = N'ALL_STORES'
+            OR EXISTS (
+                SELECT 1
+                FROM @target_souko_list hs
+                WHERE RTRIM(z.zmsn_souko) = RTRIM(hs.souko)
+            )
+      )
+    GROUP BY
+        RTRIM(z.zmsn_souko),
+        RTRIM(z.zmsn_scd)
+),
+carry_stock AS (
+    SELECT
+        RTRIM(z.zms_souko) AS warehouse_code,
+        RTRIM(z.zms_scd) AS jan_code,
+        SUM(CAST(z.zms_kuri AS DECIMAL(18,2))) AS carry_qty
+    FROM ZMS z
+    WHERE RTRIM(z.zms_scd) LIKE @jan_prefix + N'%'
+      AND (
+            @stock_scope = N'ALL_STORES'
+            OR EXISTS (
+                SELECT 1
+                FROM @target_souko_list hs
+                WHERE RTRIM(z.zms_souko) = RTRIM(hs.souko)
+            )
+      )
+    GROUP BY
+        RTRIM(z.zms_souko),
+        RTRIM(z.zms_scd)
+),
+event_stock AS (
+    SELECT
+        e.warehouse_code,
+        e.jan_code,
+        e.item_name,
+        e.iri_qty,
+        e.event_date,
+        e.slip_type,
+        e.slip_no,
+        e.unit_price,
+        e.in_qty,
+        e.out_qty,
+        e.partner_name,
+        e.source_order,
+        SUM(e.net_qty) OVER (
+            PARTITION BY e.warehouse_code, e.jan_code
+            ORDER BY e.event_date, e.source_order, e.slip_no
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS cum_net_qty,
+        SUM(e.net_qty) OVER (
+            PARTITION BY e.warehouse_code, e.jan_code
+        ) AS total_net_qty,
+        ISNULL(cs.current_qty, 0) AS current_qty,
+        ISNULL(ks.carry_qty, 0) AS carry_qty,
+        CASE WHEN ks.jan_code IS NULL THEN 0 ELSE 1 END AS has_carry
+    FROM detail_events e
+    LEFT JOIN current_stock cs
+      ON e.warehouse_code = cs.warehouse_code
+     AND e.jan_code = cs.jan_code
+    LEFT JOIN carry_stock ks
+      ON e.warehouse_code = ks.warehouse_code
+     AND e.jan_code = ks.jan_code
+),
+detail_with_stock AS (
+    SELECT
+        e.warehouse_code,
+        e.jan_code,
+        e.item_name,
+        e.iri_qty,
+        e.event_date,
+        e.slip_type,
+        e.slip_no,
+        e.unit_price,
+        e.in_qty,
+        e.out_qty,
+        e.partner_name,
+        CAST(
+            (
+                CASE
+                    WHEN @stock_anchor_mode = N'CARRY_FORWARD' AND e.has_carry = 1
+                        THEN e.carry_qty
+                    ELSE e.current_qty - e.total_net_qty
+                END
+            ) + e.cum_net_qty
+            AS DECIMAL(18,2)
+        ) AS stock_qty,
+        CAST(
+            CASE
+                WHEN @stock_anchor_mode = N'CARRY_FORWARD' AND e.has_carry = 1
+                    THEN e.carry_qty
+                ELSE e.current_qty - e.total_net_qty
+            END
+            AS DECIMAL(18,2)
+        ) AS opening_qty
+    FROM event_stock e
+),
+period_sum AS (
+    SELECT
+        d.warehouse_code,
+        d.jan_code,
+        MAX(d.item_name) AS item_name,
+        MAX(d.iri_qty) AS iri_qty,
+        MAX(d.opening_qty) AS opening_qty,
+        SUM(ISNULL(d.in_qty, 0)) AS total_in_qty,
+        SUM(ISNULL(d.out_qty, 0)) AS total_out_qty
+    FROM detail_with_stock d
+    GROUP BY
+        d.warehouse_code,
+        d.jan_code
+),
+detail_output AS (
+    SELECT
+        d.warehouse_code AS 倉庫コード,
+        ISNULL(RTRIM(w.emsb_str), N'') AS 倉庫名,
+        CAST(10 AS INT) AS データ区分,
+        d.jan_code AS 商品コード,
+        d.item_name AS 商品名,
+        d.iri_qty AS 入数,
+        ISNULL(RTRIM(z.zms_locno), N'') AS ロケーションNo,
+        d.event_date AS 入出荷日,
+        d.slip_type AS 伝票識別,
+        d.slip_no AS 伝票No,
+        d.unit_price AS 仕入単価,
+        d.in_qty AS 入荷数,
+        d.out_qty AS 出荷数,
+        d.stock_qty AS 在庫数,
+        d.partner_name AS 入出荷先名,
+        CAST(2 AS INT) AS _sort_block,
+        d.event_date AS _sort_date,
+        d.slip_no AS _sort_slip
+    FROM detail_with_stock d
+    LEFT JOIN EMSB w
+      ON RTRIM(d.warehouse_code) = RTRIM(w.emsb_kbn)
+    LEFT JOIN ZMS z
+      ON RTRIM(d.warehouse_code) = RTRIM(z.zms_souko)
+     AND RTRIM(d.jan_code) = RTRIM(z.zms_scd)
+),
+carry_output AS (
+    SELECT
+        p.warehouse_code AS 倉庫コード,
+        ISNULL(RTRIM(w.emsb_str), N'') AS 倉庫名,
+        CAST(5 AS INT) AS データ区分,
+        p.jan_code AS 商品コード,
+        p.item_name AS 商品名,
+        p.iri_qty AS 入数,
+        ISNULL(RTRIM(z.zms_locno), N'') AS ロケーションNo,
+        CAST(NULL AS INT) AS 入出荷日,
+        CAST(NULL AS NVARCHAR(20)) AS 伝票識別,
+        CAST(NULL AS INT) AS 伝票No,
+        CAST(NULL AS DECIMAL(18,2)) AS 仕入単価,
+        CAST(NULL AS DECIMAL(18,2)) AS 入荷数,
+        CAST(NULL AS DECIMAL(18,2)) AS 出荷数,
+        CAST(p.opening_qty AS DECIMAL(18,2)) AS 在庫数,
+        N'【繰 越 在 庫】' AS 入出荷先名,
+        CAST(1 AS INT) AS _sort_block,
+        CAST(@from_yyyymmdd AS INT) AS _sort_date,
+        CAST(0 AS INT) AS _sort_slip
+    FROM period_sum p
+    LEFT JOIN EMSB w
+      ON RTRIM(p.warehouse_code) = RTRIM(w.emsb_kbn)
+    LEFT JOIN ZMS z
+      ON RTRIM(p.warehouse_code) = RTRIM(z.zms_souko)
+     AND RTRIM(p.jan_code) = RTRIM(z.zms_scd)
+),
+total_output AS (
+    SELECT
+        p.warehouse_code AS 倉庫コード,
+        ISNULL(RTRIM(w.emsb_str), N'') AS 倉庫名,
+        CAST(40 AS INT) AS データ区分,
+        p.jan_code AS 商品コード,
+        p.item_name AS 商品名,
+        p.iri_qty AS 入数,
+        ISNULL(RTRIM(z.zms_locno), N'') AS ロケーションNo,
+        CAST(NULL AS INT) AS 入出荷日,
+        CAST(NULL AS NVARCHAR(20)) AS 伝票識別,
+        CAST(NULL AS INT) AS 伝票No,
+        CAST(NULL AS DECIMAL(18,2)) AS 仕入単価,
+        CAST(p.total_in_qty AS DECIMAL(18,2)) AS 入荷数,
+        CAST(p.total_out_qty AS DECIMAL(18,2)) AS 出荷数,
+        CAST(NULL AS DECIMAL(18,2)) AS 在庫数,
+        N'【期 間 合 計】' AS 入出荷先名,
+        CAST(3 AS INT) AS _sort_block,
+        CAST(@to_yyyymmdd AS INT) AS _sort_date,
+        CAST(99999999 AS INT) AS _sort_slip
+    FROM period_sum p
+    LEFT JOIN EMSB w
+      ON RTRIM(p.warehouse_code) = RTRIM(w.emsb_kbn)
+    LEFT JOIN ZMS z
+      ON RTRIM(p.warehouse_code) = RTRIM(z.zms_souko)
+     AND RTRIM(p.jan_code) = RTRIM(z.zms_scd)
+)
+SELECT
+    o.倉庫コード,
+    o.倉庫名,
+    o.データ区分,
+    o.商品コード,
+    o.商品名,
+    o.入数,
+    o.ロケーションNo,
+    o.入出荷日,
+    o.伝票識別,
+    o.伝票No,
+    o.仕入単価,
+    o.入荷数,
+    o.出荷数,
+    o.在庫数,
+    o.入出荷先名
+FROM (
+    SELECT * FROM carry_output
+    UNION ALL
+    SELECT * FROM detail_output
+    UNION ALL
+    SELECT * FROM total_output
+) o
+ORDER BY
+    o.倉庫コード,
+    o.商品コード,
+    o._sort_block,
+    o._sort_date,
+    o._sort_slip;

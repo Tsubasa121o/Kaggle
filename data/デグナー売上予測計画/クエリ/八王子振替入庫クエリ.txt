@@ -1,0 +1,45 @@
+/*
+目的:
+- 本店側で「八王子店からの振替入庫」だけを抽出する
+
+前提:
+- 八王子倉庫コード: 0003
+- 本店倉庫コード:   0000
+*/
+SET NOCOUNT ON;
+
+DECLARE @from_yyyymmdd INT = 20081101;
+DECLARE @to_yyyymmdd INT = CAST(CONVERT(VARCHAR(8), GETDATE(), 112) AS INT);
+DECLARE @jan_prefix NVARCHAR(10) = N'452';
+DECLARE @hachioji_souko NVARCHAR(10) = N'0003'; -- 元倉庫（八王子）
+DECLARE @hq_souko NVARCHAR(10) = N'0000';       -- 先倉庫（本店）
+
+SELECT
+    RTRIM(h.frih_nsouko) AS 倉庫コード,
+    ISNULL(RTRIM(wh_to.emsb_str), N'') AS 倉庫名,
+    RTRIM(h.frih_ssouko) AS 相手倉庫コード,
+    ISNULL(RTRIM(wh_from.emsb_str), N'') AS 相手倉庫名,
+    RTRIM(d.frid_scd) AS 商品コード,
+    RTRIM(d.frid_mei) AS 商品名,
+    h.frih_uribi AS 入出荷日,
+    N'振替(入庫)' AS 伝票識別,
+    h.frih_denno AS 伝票No,
+    CAST(d.frid_suryo AS DECIMAL(18,2)) AS 入荷数,
+    CAST(NULL AS DECIMAL(18,2)) AS 出荷数,
+    ISNULL(N'振替元:' + RTRIM(wh_from.emsb_str), N'振替元') AS 入出荷先名
+FROM FRID d
+JOIN FRIH h
+  ON d.frid_hid = h.frih_id
+LEFT JOIN EMSB wh_to
+  ON RTRIM(h.frih_nsouko) = RTRIM(wh_to.emsb_kbn)
+LEFT JOIN EMSB wh_from
+  ON RTRIM(h.frih_ssouko) = RTRIM(wh_from.emsb_kbn)
+WHERE RTRIM(d.frid_scd) LIKE @jan_prefix + N'%'
+  AND h.frih_uribi BETWEEN @from_yyyymmdd AND @to_yyyymmdd
+  AND CAST(d.frid_suryo AS DECIMAL(18,2)) <> 0
+  AND RTRIM(h.frih_ssouko) = RTRIM(@hachioji_souko)
+  AND RTRIM(h.frih_nsouko) = RTRIM(@hq_souko)
+ORDER BY
+    h.frih_uribi,
+    h.frih_denno,
+    RTRIM(d.frid_scd);
