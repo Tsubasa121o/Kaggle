@@ -1,5 +1,6 @@
 import argparse
 import os
+from pathlib import Path
 from typing import List
 
 import pandas as pd
@@ -160,6 +161,11 @@ def main() -> None:
     parser.add_argument("--hq-code", default="0000", help="本店倉庫コード")
     parser.add_argument("--hachioji-code", default="0003", help="八王子倉庫コード")
     parser.add_argument("--strict-after", action="store_true", help="在庫切れ日より後日(>)のみ補完。同日は除外")
+    parser.add_argument(
+        "--write-diff",
+        action="store_true",
+        help="補完差分CSVも出力する場合に指定（既定では最終CSVのみ出力）",
+    )
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -188,7 +194,15 @@ def main() -> None:
     out_diff = os.path.join(args.output_dir, "在庫切れ期間補完差分_八王子振替入庫.csv")
 
     complemented.to_csv(out_main, encoding="utf-8-sig", index=False)
-    changes.to_csv(out_diff, encoding="utf-8-sig", index=False)
+    if args.write_diff:
+        changes.to_csv(out_diff, encoding="utf-8-sig", index=False)
+    else:
+        diff_path = Path(out_diff)
+        try:
+            if diff_path.exists():
+                diff_path.unlink()
+        except OSError:
+            pass
 
     before_open = (stockouts["欠品ステータス"].astype(str).str.upper() == "OPEN").sum()
     after_open = (complemented["欠品ステータス"].astype(str).str.upper() == "OPEN").sum()
@@ -200,8 +214,9 @@ def main() -> None:
     print(f"OPEN before: {before_open:,}")
     print(f"OPEN after:  {after_open:,}")
     print(f"CLOSED after: {after_closed:,}")
-    print(f"Output main: {out_main}")
-    print(f"Output diff: {out_diff}")
+    print(f"最終出力: {out_main}")
+    if args.write_diff:
+        print(f"差分出力: {out_diff}")
 
 
 if __name__ == "__main__":

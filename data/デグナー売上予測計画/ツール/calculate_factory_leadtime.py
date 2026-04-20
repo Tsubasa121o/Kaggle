@@ -156,13 +156,8 @@ def write_csv_with_fallback(path: Path, fieldnames: list[str], rows: list[dict[s
             w.writeheader()
             w.writerows(rows)
         return path
-    except PermissionError:
-        alt = path.with_name(f"{path.stem}_new{path.suffix}")
-        with alt.open("w", encoding=WRITE_ENCODING, newline="") as f:
-            w = csv.DictWriter(f, fieldnames=fieldnames)
-            w.writeheader()
-            w.writerows(rows)
-        return alt
+    except PermissionError as exc:
+        raise RuntimeError(f"出力先ファイルに書き込めませんでした（開いている可能性があります）: {path}") from exc
 
 
 def first_value(row: dict[str, str], aliases: list[str]) -> str:

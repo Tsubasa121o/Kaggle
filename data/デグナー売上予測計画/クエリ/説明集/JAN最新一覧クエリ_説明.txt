@@ -1,0 +1,54 @@
+﻿対象: JAN最新一覧クエリ.txt
+
+このクエリは、JANコードが `452%` の商品について、
+SMS/売上/仕入/振替/出荷/在庫のいずれかに存在するJANを一覧化し、
+最新属性と活動状況を返します。
+
+カラム説明
+- jan_code
+  JANコード（452始まり）
+
+- item_name
+  商品名。優先順は SMS.sms_mei → 売上明細の最新商品名
+
+- color
+  カラー。優先順は SMS.sms_color → 売上明細の最新カラー
+
+- size
+  サイズ。優先順は SMS.sms_size → 売上明細の最新サイズ
+
+- in_sms_master
+  SMSマスタに存在する場合 1、存在しない場合 0
+
+- has_sales
+  売上データ（SYKD）に存在する場合 1、存在しない場合 0
+
+- has_receipt
+  仕入入荷データ（NYKD/NYKH）に存在する場合 1、存在しない場合 0
+
+- has_transfer
+  振替データ（FRID/FRIH）に存在する場合 1、存在しない場合 0
+
+- has_shipment
+  出荷データ（URID/URIH）に存在する場合 1、存在しない場合 0
+
+- has_current_stock
+  現在在庫（ZMSN）に存在する場合 1、存在しない場合 0
+
+- current_stock_qty
+  現在在庫数量（ZMSNのJAN合計）
+
+- first_sale_date
+  初回売上日（正の売上数量のみ、yyyymmdd）
+
+- last_sale_date
+  最終売上日（返品を含む売上明細の最新日、yyyymmdd）
+
+- last_activity_date
+  最終活動日（売上・入荷・振替・出荷の最大日付、yyyymmdd）
+
+- sales_qty_total
+  売上数量合計（正数売上のみ）
+
+- return_qty_total
+  返品数量合計（負数売上の絶対値合計）

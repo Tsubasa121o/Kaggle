@@ -1,0 +1,196 @@
+/*
+Purpose:
+- Output full handled JAN list (452*) with latest product info
+- Keep columns useful for later attribute grouping
+
+Definition of handled JAN:
+- Exists in at least one of:
+  - SMS master
+  - sales (SYKD)
+  - receipts (NYKD/NYKH)
+  - transfers (FRID/FRIH)
+  - shipments (URID/URIH)
+  - current stock (ZMSN)
+*/
+WITH params AS (
+    SELECT
+        CAST(20081101 AS INT) AS from_yyyymmdd
+      , CAST(CONVERT(VARCHAR(8), GETDATE(), 112) AS INT) AS to_yyyymmdd
+),
+sms_attr AS (
+    SELECT
+        RTRIM(s.sms_scd) AS jan_code
+      , MAX(RTRIM(s.sms_mei)) AS sms_name
+      , MAX(RTRIM(s.sms_color)) AS sms_color
+      , MAX(RTRIM(s.sms_size)) AS sms_size
+    FROM SMS s
+    WHERE RTRIM(s.sms_scd) LIKE '452%'
+      AND RTRIM(s.sms_scd) <> ''
+    GROUP BY RTRIM(s.sms_scd)
+),
+sales_rows AS (
+    SELECT
+        RTRIM(d.sykd_scd) AS jan_code
+      , d.sykd_uribi AS sale_date
+      , CAST(d.sykd_suryo AS DECIMAL(18,2)) AS qty_raw
+      , RTRIM(d.sykd_mei) AS detail_name
+      , RTRIM(d.sykd_color) AS detail_color
+      , RTRIM(d.sykd_size) AS detail_size
+    FROM SYKD d
+    CROSS JOIN params p
+    WHERE RTRIM(d.sykd_scd) LIKE '452%'
+      AND RTRIM(d.sykd_scd) <> ''
+      AND d.sykd_uribi BETWEEN p.from_yyyymmdd AND p.to_yyyymmdd
+      AND CAST(d.sykd_suryo AS DECIMAL(18,2)) <> 0
+),
+sales_span AS (
+    SELECT
+        r.jan_code
+      , MIN(CASE WHEN r.qty_raw > 0 THEN r.sale_date END) AS first_positive_sale_date
+      , MAX(r.sale_date) AS last_sale_date
+      , SUM(CASE WHEN r.qty_raw > 0 THEN r.qty_raw ELSE 0 END) AS sales_qty
+      , SUM(CASE WHEN r.qty_raw < 0 THEN ABS(r.qty_raw) ELSE 0 END) AS return_qty
+    FROM sales_rows r
+    GROUP BY r.jan_code
+),
+sales_latest_attr AS (
+    SELECT
+        x.jan_code
+      , x.detail_name
+      , x.detail_color
+      , x.detail_size
+      , x.sale_date
+      , ROW_NUMBER() OVER (
+            PARTITION BY x.jan_code
+            ORDER BY x.sale_date DESC, x.detail_name DESC, x.detail_color DESC, x.detail_size DESC
+        ) AS rn
+    FROM sales_rows x
+),
+receipt_rows AS (
+    SELECT
+        RTRIM(d.nykd_scd) AS jan_code
+      , h.nykh_uribi AS receipt_date
+    FROM NYKD d
+    JOIN NYKH h
+        ON d.nykd_hid = h.nykh_id
+    CROSS JOIN params p
+    WHERE RTRIM(d.nykd_scd) LIKE '452%'
+      AND RTRIM(d.nykd_scd) <> ''
+      AND h.nykh_uribi BETWEEN p.from_yyyymmdd AND p.to_yyyymmdd
+      AND CAST(d.nykd_suryo AS DECIMAL(18,2)) <> 0
+),
+receipt_agg AS (
+    SELECT
+        r.jan_code
+      , MAX(r.receipt_date) AS last_receipt_date
+    FROM receipt_rows r
+    GROUP BY r.jan_code
+),
+transfer_rows AS (
+    SELECT
+        RTRIM(d.frid_scd) AS jan_code
+      , h.frih_uribi AS transfer_date
+    FROM FRID d
+    JOIN FRIH h
+        ON d.frid_hid = h.frih_id
+    CROSS JOIN params p
+    WHERE RTRIM(d.frid_scd) LIKE '452%'
+      AND RTRIM(d.frid_scd) <> ''
+      AND h.frih_uribi BETWEEN p.from_yyyymmdd AND p.to_yyyymmdd
+      AND CAST(d.frid_suryo AS DECIMAL(18,2)) <> 0
+),
+transfer_agg AS (
+    SELECT
+        t.jan_code
+      , MAX(t.transfer_date) AS last_transfer_date
+    FROM transfer_rows t
+    GROUP BY t.jan_code
+),
+shipment_rows AS (
+    SELECT
+        RTRIM(d.urid_scd) AS jan_code
+      , h.urih_uribi AS shipment_date
+    FROM URID d
+    JOIN URIH h
+        ON d.urid_hid = h.urih_id
+    CROSS JOIN params p
+    WHERE RTRIM(d.urid_scd) LIKE '452%'
+      AND RTRIM(d.urid_scd) <> ''
+      AND h.urih_uribi BETWEEN p.from_yyyymmdd AND p.to_yyyymmdd
+      AND CAST(d.urid_suryo AS DECIMAL(18,2)) <> 0
+),
+shipment_agg AS (
+    SELECT
+        s.jan_code
+      , MAX(s.shipment_date) AS last_shipment_date
+    FROM shipment_rows s
+    GROUP BY s.jan_code
+),
+stock_agg AS (
+    SELECT
+        RTRIM(z.zmsn_scd) AS jan_code
+      , SUM(CAST(z.zmsn_zai AS DECIMAL(18,2))) AS current_stock_qty
+    FROM ZMSN z
+    WHERE RTRIM(z.zmsn_scd) LIKE '452%'
+      AND RTRIM(z.zmsn_scd) <> ''
+    GROUP BY RTRIM(z.zmsn_scd)
+),
+jan_pool AS (
+    SELECT jan_code FROM sms_attr
+    UNION
+    SELECT jan_code FROM sales_span
+    UNION
+    SELECT jan_code FROM receipt_agg
+    UNION
+    SELECT jan_code FROM transfer_agg
+    UNION
+    SELECT jan_code FROM shipment_agg
+    UNION
+    SELECT jan_code FROM stock_agg
+)
+SELECT
+    j.jan_code
+  , COALESCE(NULLIF(m.sms_name, ''), NULLIF(sla.detail_name, ''), '') AS item_name
+  , COALESCE(NULLIF(m.sms_color, ''), NULLIF(sla.detail_color, ''), '') AS color
+  , COALESCE(NULLIF(m.sms_size, ''), NULLIF(sla.detail_size, ''), '') AS size
+  , CAST(CASE WHEN m.jan_code IS NOT NULL THEN 1 ELSE 0 END AS INT) AS in_sms_master
+  , CAST(CASE WHEN ss.jan_code IS NOT NULL THEN 1 ELSE 0 END AS INT) AS has_sales
+  , CAST(CASE WHEN ra.jan_code IS NOT NULL THEN 1 ELSE 0 END AS INT) AS has_receipt
+  , CAST(CASE WHEN ta.jan_code IS NOT NULL THEN 1 ELSE 0 END AS INT) AS has_transfer
+  , CAST(CASE WHEN sha.jan_code IS NOT NULL THEN 1 ELSE 0 END AS INT) AS has_shipment
+  , CAST(CASE WHEN st.jan_code IS NOT NULL THEN 1 ELSE 0 END AS INT) AS has_current_stock
+  , st.current_stock_qty
+  , CASE WHEN ss.first_positive_sale_date IS NULL THEN '' ELSE RTRIM(CAST(ss.first_positive_sale_date AS VARCHAR(8))) END AS first_sale_date
+  , CASE WHEN ss.last_sale_date IS NULL THEN '' ELSE RTRIM(CAST(ss.last_sale_date AS VARCHAR(8))) END AS last_sale_date
+  , CASE WHEN la.last_activity_date IS NULL THEN '' ELSE RTRIM(CAST(la.last_activity_date AS VARCHAR(8))) END AS last_activity_date
+  , ISNULL(ss.sales_qty, 0) AS sales_qty_total
+  , ISNULL(ss.return_qty, 0) AS return_qty_total
+FROM jan_pool j
+LEFT JOIN sms_attr m
+    ON j.jan_code = m.jan_code
+LEFT JOIN sales_span ss
+    ON j.jan_code = ss.jan_code
+LEFT JOIN sales_latest_attr sla
+    ON j.jan_code = sla.jan_code
+   AND sla.rn = 1
+LEFT JOIN receipt_agg ra
+    ON j.jan_code = ra.jan_code
+LEFT JOIN transfer_agg ta
+    ON j.jan_code = ta.jan_code
+LEFT JOIN shipment_agg sha
+    ON j.jan_code = sha.jan_code
+LEFT JOIN stock_agg st
+    ON j.jan_code = st.jan_code
+OUTER APPLY (
+    SELECT
+        MAX(v.activity_date) AS last_activity_date
+    FROM (
+        VALUES
+            (ss.last_sale_date),
+            (ra.last_receipt_date),
+            (ta.last_transfer_date),
+            (sha.last_shipment_date)
+    ) v(activity_date)
+) la
+ORDER BY
+    j.jan_code;

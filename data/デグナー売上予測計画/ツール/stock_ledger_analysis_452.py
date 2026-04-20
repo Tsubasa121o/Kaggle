@@ -1,6 +1,7 @@
 import argparse
 import os
 import re
+from pathlib import Path
 from typing import List
 
 import pandas as pd
@@ -165,14 +166,27 @@ def build_stockout_periods(df: pd.DataFrame, include_open: bool = True) -> pd.Da
 def main() -> None:
     root = project_root()
     default_out = os.path.join(root, "データ")
+    default_intermediate = os.path.join(root, "ツール", "中間出力")
     parser = argparse.ArgumentParser(description="在庫受払帳再現データから欠品期間を作成")
     parser.add_argument("--input-csv", default=default_input_csv(root), help="在庫受払帳再現CSVのパス")
     parser.add_argument("--jan-csv", default="", help="任意: JAN一覧CSV。指定時はこのJANに限定")
     parser.add_argument("--jan-prefix", default="452", help="対象JANプレフィックス")
     parser.add_argument("--output-dir", default=default_out, help="出力先ディレクトリ")
+    parser.add_argument(
+        "--write-intermediate",
+        action="store_true",
+        help="整理済み在庫データCSVを中間出力する場合に指定（既定では最終CSVのみ出力）",
+    )
+    parser.add_argument(
+        "--intermediate-dir",
+        default=default_intermediate,
+        help="整理済み在庫データCSVの出力先（--write-intermediate 指定時のみ使用）",
+    )
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
+    if args.write_intermediate:
+        os.makedirs(args.intermediate_dir, exist_ok=True)
 
     print(f"Using ledger CSV: {args.input_csv}")
     if args.jan_csv:
@@ -188,27 +202,35 @@ def main() -> None:
 
     stockouts = build_stockout_periods(data, include_open=True)
 
-    clean_csv = os.path.join(args.output_dir, "整理済み在庫データ_452限定.csv")
-    returns_csv = os.path.join(args.output_dir, "返品データ一覧_452限定.csv")
-    receipts_csv = os.path.join(args.output_dir, "入荷データ一覧_452限定.csv")
     stockouts_csv = os.path.join(args.output_dir, "在庫切れ期間一覧_452限定.csv")
-
-    export_cols = [c for c in data.columns if c not in ["入荷数_num", "出荷数_num", "在庫数_num", "_row_no"]]
-    data[export_cols].to_csv(clean_csv, encoding="utf-8-sig", index=False)
-
-    returns = data[(data["伝票識別"] == "売上") & (data["出荷数_num"] < 0)][["商品コード", "入出荷日", "出荷数"]]
-    returns.to_csv(returns_csv, encoding="utf-8-sig", index=False)
-
-    receipts = data[(data["伝票識別"] == "仕入") & (data["入荷数_num"] > 0)][["商品コード", "入出荷日", "入荷数"]]
-    receipts.to_csv(receipts_csv, encoding="utf-8-sig", index=False)
+    legacy_clean_csv = os.path.join(args.output_dir, "整理済み在庫データ_452限定.csv")
+    legacy_returns_csv = os.path.join(args.output_dir, "返品データ一覧_452限定.csv")
+    legacy_receipts_csv = os.path.join(args.output_dir, "入荷データ一覧_452限定.csv")
 
     stockouts.to_csv(stockouts_csv, encoding="utf-8-sig", index=False)
 
+    if args.write_intermediate:
+        clean_csv = os.path.join(args.intermediate_dir, "整理済み在庫データ_452限定.csv")
+        export_cols = [c for c in data.columns if c not in ["入荷数_num", "出荷数_num", "在庫数_num", "_row_no"]]
+        data[export_cols].to_csv(clean_csv, encoding="utf-8-sig", index=False)
+    else:
+        removed = 0
+        for p in [legacy_clean_csv, legacy_returns_csv, legacy_receipts_csv]:
+            path = Path(p)
+            try:
+                if path.exists():
+                    path.unlink()
+                    removed += 1
+            except OSError:
+                continue
+
     print("\nDone.")
-    print(f"返品 rows: {len(returns):,}")
-    print(f"入荷 rows: {len(receipts):,}")
     print(f"在庫切れ期間 rows: {len(stockouts):,}")
-    print(f"Output dir: {args.output_dir}")
+    print(f"最終出力: {stockouts_csv}")
+    if args.write_intermediate:
+        print(f"中間出力: {args.intermediate_dir}")
+    else:
+        print(f"既存中間ファイル削除数: {removed}")
 
 
 if __name__ == "__main__":

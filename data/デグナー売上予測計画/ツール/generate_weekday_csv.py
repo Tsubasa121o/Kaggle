@@ -64,6 +64,20 @@ def load_holiday_map_with_fallback(out_dir: Path) -> tuple[dict[date, str], str]
         return {}, "none"
 
 
+def cleanup_old_weekday_csvs(out_dir: Path, keep: Path) -> int:
+    removed = 0
+    for p in out_dir.glob("曜日一覧_*.csv"):
+        if p.resolve() == keep.resolve():
+            continue
+        try:
+            p.unlink()
+            removed += 1
+        except OSError:
+            # 開いているファイルは削除できないため、そのまま残す
+            continue
+    return removed
+
+
 def main() -> None:
     end_date = date.today()
 
@@ -98,7 +112,9 @@ def main() -> None:
             )
             current += timedelta(days=1)
 
+    removed_count = cleanup_old_weekday_csvs(out_dir, out_path)
     print(f"出力完了: {out_path}")
+    print(f"旧ファイル削除数: {removed_count}")
 
 
 if __name__ == "__main__":

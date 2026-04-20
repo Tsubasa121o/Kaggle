@@ -1,0 +1,53 @@
+対象: 発注入荷予定クエリ.txt
+
+このクエリは、発注No × JAN単位で以下を返します。
+- 発注日
+- 実際の入荷日（初回・最終）
+- 未入荷残
+- 推定入荷予定日
+
+重要:
+- 「入荷予定日」は発注データ上の予定日列ではなく、過去実績からの推定値です。
+- 推定ロジック:
+  1) 工場コード + JAN の加重平均リードタイム
+  2) 工場コード単位の加重平均リードタイム
+  3) どちらも無い場合は 90日
+
+主な出力カラム
+- po_no
+  発注No
+
+- po_date_yyyymmdd / po_date
+  発注日（数値8桁 / DATE）
+
+- vendor_code
+  工場コード（発注先コード）
+
+- jan_code, item_name, model_no, color, size
+  商品属性
+
+- po_qty
+  発注数量
+
+- received_qty_total
+  入荷済み累計数量
+
+- remaining_qty
+  未入荷残数量（負値は0に丸め）
+
+- first_receipt_date_yyyymmdd / first_receipt_date
+  初回入荷日（数値8桁 / DATE）
+
+- last_receipt_date_yyyymmdd / last_receipt_date
+  最終入荷日（数値8桁 / DATE）
+
+- estimated_lead_days
+  推定に使用したリードタイム日数
+
+- expected_receipt_date_yyyymmdd / expected_receipt_date
+  推定入荷予定日（数値8桁 / DATE）
+
+- receipt_status
+  CLOSED: 残数量0以下
+  OPEN_OVERDUE: 未入荷残あり かつ 予定日が今日より前
+  OPEN_PENDING: 未入荷残あり かつ 予定日が今日以降
